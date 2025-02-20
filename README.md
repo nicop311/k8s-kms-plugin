@@ -4,7 +4,7 @@ This microservice implements the Kubernetes KMS protocol as a gRPC service that 
 
 This plugin will also run in proxy mode which can connect to a remote plugin service running in a secure network device (Key Managers)
 
-## requirements
+## Requirements
 
 This service is designed for kubernetes clusters that are using version 1.10.0 or higher and implements the KMS API:
 
@@ -12,11 +12,42 @@ https://kubernetes.io/docs/tasks/administer-cluster/kms-provider/
 
 So for development purposes, you'll want a cluster that can be configured to use a KMS gRPC endpoint on your APIServer nodes.
 
-To serve the k8s-kms-plugin for encryption operations from Kubernetes, you will need at least one AES key in a PKCS11 provider.
+To serve the `k8s-kms-plugin` for encryption operations from Kubernetes, you will need at least one AES key in a PKCS11 provider.
+
+## Build `k8s-kms-plugin` locally with `goreleaser`
+
+This allows you to test your `goreleaser` Github Action Recipe locally.
+
+### shell `bash`
+
+Follow these instruction to locally build the using the shell bash. I use
+`make get-ldflags` to create `LDFLAGS`.
+
+```bash
+export LDFLAGS=$(make get-ldflags)
+export WORKSPACE=/pwd
+export GITHUB_REPOSITORY_OWNER=localfakegithubowner
+```
+
+```bash
+podman run -it --rm -v $PWD:/pwd   --workdir /pwd -e LDFLAGS=$LDFLAGS   -e WORKSPACE=$WORKSPACE -e GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER  --platform "linux/amd64"  ghcr.io/thalesgroup/goreleaser-glibc-image:golang-1.23.0-bookworm release --clean --snapshot --skip sign,publish,validate,ko,sbom
+```
+
+### shell `fish`
+
+```bash
+set LDFLAGS $(make get-ldflags)
+set WORKSPACE /pwd
+set GITHUB_REPOSITORY_OWNER localfakegithubowner
+```
+
+```bash
+podman run -it --rm -v $PWD:/pwd   --workdir /pwd -e LDFLAGS=$LDFLAGS   -e WORKSPACE=$WORKSPACE -e GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER  --platform "linux/amd64"  ghcr.io/thalesgroup/goreleaser-glibc-image:golang-1.23.0-bookworm release --clean --snapshot --skip sign,publish,validate,ko,sbom
+```
 
 ## KMS provider for SoftHsm V2
 
-In this mode, we recommend to run the k8s-kms-plugin with the GCM algorithm.  
+In this mode, we recommend to run the `k8s-kms-plugin` with the GCM algorithm.  
 It provides a better design for authenticated encryption operations :
 
 ```sh
@@ -32,7 +63,7 @@ k8s-kms-plugin serve \
 ## KMS provider for TPM2 PKCS11
 
 You must know that AES GCM is not supported by the TPM v2 specifications.
-In this mode, we recommend to run the k8s-kms-plugin with the CBC-then-HMAC algorithm. 
+In this mode, we recommend to run the `k8s-kms-plugin` with the CBC-then-HMAC algorithm. 
 You must provide an HMAC key alongside the AES key for encryption :
 
 ```sh
@@ -53,7 +84,7 @@ Read the [QUICKSTART.md](QUICKSTART.md).
 
 This plugin is designed to be deployed in 2 configurations
 
-- Client/Server - k8s-kms-plugin in `client` mode will `enroll` to an external k8s-kms-plugin running in `serve` mode
+- Client/Server - `k8s-kms-plugin` in `client` mode will `enroll` to an external `k8s-kms-plugin` running in `serve` mode
 - StandAlone(TODO) - Plugin and PKCS11 library deployed as StaticPod/HostContainer on APIServer nodes, this will require
 coordination with k8s provisioning tools.
 
@@ -119,4 +150,53 @@ Scanning your code and 288 packages across 34 dependent modules for known vulner
 No vulnerabilities found.
 ```
 
+## Signing artifacts
 
+During the release workflow, certificates and signatures of artifacts are generated.
+They are signed by a tool named cosign using a keyless mode.
+It required an authentication by clicking in links present in logs.
+
+![Screenshot of one example of logs containing three authentication links generating tokens](docs/images/AuthLinksCosign.png)
+
+Once you click on one, you can submit a verification code that will redirect you to three types of authentication. Then click on Github authentication.
+
+ ![Screenshot of the interface for submitting a code](docs/images/CodeSubmit.png)
+
+Do these actions for every authentication links and the signatures and the certificates will be generated with the artifacts in the release.
+
+## Verifying the authenticity of an artifact
+
+You need to downloads 3 files : [ _**[file.txt]**_, _**[file].pem**_, _**[file].sig**_]
+
+If you don't have, install cosign by typing the commands below :
+
+  ```bash
+  curl -O -L "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+  sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+  sudo chmod +x /usr/local/bin/cosign
+  ```
+
+For a verification with cosign installed and pay attention to modify the name of the files :
+
+  ```bash
+  COSIGN_EXPERIMENTAL=1 cosign verify-blob --cert [file]-keyless.pem --signature [file]-keyless.sig --certificate-oidc-issuer "https://github.com/login/oauth" --certificate-identity [ Mail adress of the owner of the repo ] [file]
+  ```
+
+Or using Podman without installing cosign :
+
+```bash
+podman run --rm -it gcr.io/projectsigstore/cosign:v1.13.0 COSIGN_EXPERIMENTAL=1 cosign verify-blob --cert [file]-keyless.pem --signature [file]-keyless.sig --certificate-oidc-issuer "https://github.com/login/oauth" --certificate-identity [ Mail adress of the owner of the repo ] [file]
+```
+
+## Verifying the SLSA attestation of a container
+
+The image's attestation of provenance has been issued by a specific oidc-issuer that is 'https://token.actions.githubusercontent.com' in this repository.
+In the next command example, it is required to replace digest by the digest of the image that needs to be verified and the owner of the repo.
+
+```bash
+cosign verify-attestation --type slsaprovenance \
+      --certificate-identity-regexp="https://github.com/slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@refs/tags/*" \
+      --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+      ghcr.io/OWNER/k8s-kms-plugin@digest | jq .payload -r | base64 --decode | jq
+
+```
