@@ -1,8 +1,18 @@
+/*
+ * Copyright 2025 Thales Group
+ * SPDX-License-Identifier: MIT
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
 package providers
 
 import (
 	"context"
 	"errors"
+
 	"github.com/ThalesGroup/gose/jose"
 	"google.golang.org/grpc"
 

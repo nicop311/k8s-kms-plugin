@@ -1,4 +1,9 @@
-# Copyright 2024 Thales
+# Copyright 2025 Thales Group
+# SPDX-License-Identifier: MIT
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
 .PHONY: all lint build coverage dev gen
 
 all: build
@@ -8,14 +13,25 @@ PROJECT_NAME := k8s-kms-plugin
 GO_MODULE_NAME := "github.com/ThalesGroup/$(PROJECT_NAME)"
 
 # Useful variables for build metadata
-VERSION ?= $(shell git describe --tags --always)
+VERSION ?= $(shell git describe --tags --always --dirty)
+# equivalent command to test git dirty status in bash terminal: [[ -n "$(git status --porcelain)" ]] && echo "true" || echo "false"
+IS_GIT_DIRTY := $(shell [ -n "$$(git status --porcelain)" ] && echo "true" || echo "false")
 COMMIT_LONG ?= $(shell git rev-parse HEAD)
 COMMIT_SHORT ?= $(shell git rev-parse --short=8 HEAD)
 COMMIT_TIMESTAMP := $(shell git show -s --format=%cI HEAD)
 GO_VERSION ?= $(shell go version)
 BUILD_PLATFORM  ?= $(shell uname -m)
 BUILD_DATE ?= $(shell date -u --iso-8601=seconds)
-LDFLAGS = "-X '$(GO_MODULE_NAME)/pkg/version.RawGitDescribe=$(VERSION)' -X '$(GO_MODULE_NAME)/pkg/version.GitCommitIdLong=$(COMMIT_LONG)' -X '$(GO_MODULE_NAME)/pkg/version.GitCommitIdShort=$(COMMIT_SHORT)' -X '$(GO_MODULE_NAME)/pkg/version.GoVersion=$(GO_VERSION)' -X '$(GO_MODULE_NAME)/pkg/version.BuildPlatform=$(BUILD_PLATFORM)' -X '$(GO_MODULE_NAME)/pkg/version.BuildDate=$(BUILD_DATE)' -X '$(GO_MODULE_NAME)/pkg/version.GitCommitTimestamp=$(COMMIT_TIMESTAMP)'"
+
+LDFLAGS = "-X '$(GO_MODULE_NAME)/pkg/version.RawGitDescribe=$(VERSION)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.GitCommitIdLong=$(COMMIT_LONG)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.GitCommitIdShort=$(COMMIT_SHORT)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.GoVersion=$(GO_VERSION)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.BuildPlatform=$(BUILD_PLATFORM)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.BuildDate=$(BUILD_DATE)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.GitCommitTimestamp=$(COMMIT_TIMESTAMP)' \
+	-X '$(GO_MODULE_NAME)/pkg/version.GitDirtyStr=$(IS_GIT_DIRTY)'"
+
 GO_LDFLAGS = -ldflags=$(LDFLAGS)
 BINARY_NAME = $(PROJECT_NAME)
 
@@ -50,7 +66,7 @@ build:
 		@go build $(GO_LDFLAGS) -o k8s-kms-plugin cmd/k8s-kms-plugin/main.go
 build-debug:
 		@go version
-		@go build -gcflags="all=-N -l" -o k8s-kms-plugin cmd/k8s-kms-plugin/main.go
+		@go build -gcflags="all=-N -l" $(GO_LDFLAGS) -o k8s-kms-plugin cmd/k8s-kms-plugin/main.go
 		$(info use cmd : dlv --listen=:2345 --headless=true --api-version=2 --accept-multiclient exec k8s-kms-plugin)
 		$(info will listen to port 2345)
 run:
@@ -80,5 +96,4 @@ release:
 		@echo "Makefile: Running goreleaser release --clean fro project $(PROJECT_NAME)"
 		LDFLAGS=$(LDFLAGS) goreleaser release --clean --skip sign,validate,ko
 get-ldflags:
- 	
 		@echo $(LDFLAGS)
