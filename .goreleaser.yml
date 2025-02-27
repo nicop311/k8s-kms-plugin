@@ -1,3 +1,7 @@
+# .goreleaser.yml
+
+version: 2
+
 project_name: k8s-kms-plugin
 
 env:
