@@ -44,17 +44,11 @@ require (
 )
 
 require (
-	github.com/ThalesGroup/crypto11 v1.4.1
-	github.com/ThalesGroup/gose v0.10.0
+	github.com/ThalesGroup/crypto11 v1.4.2-rc
+	github.com/ThalesGroup/gose v0.10.1-rc
 	github.com/hashicorp/go-version v1.7.0
 	k8s.io/kms v0.32.4
 )
-
-// TODO: remove this replace statement once the update to go1.23.9 is completed on the crypto11 repo
-replace github.com/ThalesGroup/crypto11 v1.4.1 => github.com/ThalesGroup/crypto11 v1.4.1-0.20250515132444-7d70ab3e000b
-
-// TODO: remove this replace statement once the update to go1.23.9 is completed on the gose repo
-replace github.com/ThalesGroup/gose v0.10.0 => github.com/ThalesGroup/gose v0.10.1-0.20250515133433-21c55fca0ee1
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
