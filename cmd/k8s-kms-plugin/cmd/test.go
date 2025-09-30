@@ -1,18 +1,12 @@
 /*
-Copyright © 2020 NAME HERE <EMAIL ADDRESS>
+ * Copyright 2025 Thales Group
+ * SPDX-License-Identifier: MIT
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE file or at
+ * https://opensource.org/licenses/MIT.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package cmd
 
 import (
@@ -24,10 +18,6 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 	"hash"
 	"math/big"
 	"net"
@@ -35,13 +25,29 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"golang.org/x/sync/errgroup"
+
 	istio "github.com/ThalesGroup/k8s-kms-plugin/apis/istio/v1"
 )
 
-var loop bool
-var maxLoops int
-var loopTime, timeout time.Duration
+// ViperFlagsTest defines a struct to hold the values of cobra CLI flags and use viper to populate them
+type ViperFlagsTest struct {
+	Loop     bool          `mapstructure:"loop"`
+	MaxLoops int           `mapstructure:"max-loops"`
+	LoopTime time.Duration `mapstructure:"loop-sleep"`
 
+	SocketPath string        `mapstructure:"socket"`
+	Timeout    time.Duration `mapstructure:"timeout"`
+}
+
+// Declare the viper CLI flag values buffer
+var viperFlagsTest ViperFlagsTest
+
+// dummy certificates & private keys
 const dummyCaCert = "-----BEGIN CERTIFICATE-----\nMIIGADCCA7SgAwIBAgIQAzUe9pVQo20RU9LSiRiDkDBBBgkqhkiG9w0BAQowNKAP\nMA0GCWCGSAFlAwQCAQUAoRwwGgYJKoZIhvcNAQEIMA0GCWCGSAFlAwQCAQUAogMC\nASAwLTEQMA4GA1UEChMHQWNtZSBDbzEZMBcGA1UEAxMQdGVzdC5leGFtcGxlLmNv\nbTAeFw0yMDA5MTUxMDEwNTlaFw0zMDA5MTMxMDEwNTlaMC0xEDAOBgNVBAoTB0Fj\nbWUgQ28xGTAXBgNVBAMTEHRlc3QuZXhhbXBsZS5jb20wggIiMA0GCSqGSIb3DQEB\nAQUAA4ICDwAwggIKAoICAQCuaGKyDvJ0ebW/9Kq7fltuLZhWQJb613EcHc2eV7ht\nejffCYklRJeKONhkozroxsb5y0ETvlWRiBDVBj0Zq0dyHY781N/QJZcBons0cRXV\nYNBd4nUaJ//FufzI1mbSXohpSaV1hkoQ2uTqB4B7yUWaiM1nIx1snzdXJSGhVYxy\nRhdTHMNd/z8ut+dwRojFIiU7S5NXaCc9LL9LryXy1N+VZo6sHK6NZQu27ryE7wv1\nh+bvG6TsfIsmfcv94ghX94olxY/+h38sDrX3LboKt3j8Tktg3amnwuKENYnvTOMZ\nkHkofj6k8kx+lCzJLDi2hCcq3r3ZPoT146mU5v3nwGF0zPSN3+GertuI9rmSvUy+\ngeD5QeWczUgADaALMVBTQY+wEBNhzyWa6O/l/yPErW2epFSibHIyz+97Nlen9CaF\nKBAUhRYVJIaUOCPmCK5VW4ghadF8zflUsgo5s/himfs9CWF12yAEYS1MjhyTTmAa\n0/DymJ0M8kaTuVUoQW6rrPGAzVRQEBeeVa3OJY6mPvOq0XosYGXtROSq9DMPGwcy\no9OlXhw6uD/rBPxNC8cqDZviM3QHKoN4lGatgfuSrowIU5Bi1yzgMxKdouY78OEI\nThtQTw2XxdoUy+Vr0XlQg9gAJqP0mq1O8fu7zjhua9k8Pdm6B0fxGsBa0Yz4MMQn\nIwIDAQABo4GzMIGwMA4GA1UdDwEB/wQEAwICBDAdBgNVHSUEFjAUBggrBgEFBQcD\nAQYIKwYBBQUHAwIwDwYDVR0TAQH/BAUwAwEB/zANBgNVHQ4EBgQEAQIDBDBfBggr\nBgEFBQcBAQRTMFEwIwYIKwYBBQUHMAGGF2h0dHA6Ly9vY3NwLmV4YW1wbGUuY29t\nMCoGCCsGAQUFBzAChh5odHRwOi8vY3J0LmV4YW1wbGUuY29tL2NhMS5jcnQwQQYJ\nKoZIhvcNAQEKMDSgDzANBglghkgBZQMEAgEFAKEcMBoGCSqGSIb3DQEBCDANBglg\nhkgBZQMEAgEFAKIDAgEgA4ICAQCfFnc0Cajm48LiDw2NxSsNMCGCT/uju6KJG3O8\naXG6rEorDJs3uWCdyn6PhzyhqEdPGiBfJVJnmY9OfF8wWx3zXVAxstOp1RIrA3yI\nfIZAMoTsAYYKXH9gMda9wcPMFOFKrjbmDJKk8c3WwXth5NIeqqQPGTTh0ovHVc8Q\nHDSZo3lyBEmUDjrF2qu0VGn4m2kuxFl8lPUAu8lUR2+KLj6XStqhDd6gXCa2/quZ\nSROFRccS5bPEwJh7l1QSqhwHjS0oKU0sIGq6+VPq2TKUcf4F1zaw4dOKqhBbm+o1\nN7K49deaQH3Zb40jR7f2Rw+s86MM1ujS8tu98yRcu8+KPq1vb1fOQlG/UnOAtYd7\n8kej0ot/QYb7NxDqxNqW2vePbkUoOHV9TtRNQDV0hQooWB/GzZGWUrILDRugDwH+\nX7XNzC5ov1TbRpXkvmpBkY80oBFb9P4bCtUb2dmcdxM7KM5dnoHOQ8Fb7aSWcstE\nSOI2qbSnl2/uigjWLayWpn6k1OTszsLQTxAcezNLL6cTI+eWb3oC0KoAP458FtNH\nb/W8F2WNIxCjD9ydVU2JFPRSy1FfAQFhNMPwyIoT4AZ46G/u4gNu/AIPERfCUqdG\nQWUMsGgTs6NVDmo5YeasplU5uYyEvqPnUhZFsxNSPu/wmDiIcjrtIeEym7Dq4MiG\neOMvxQ==\n-----END CERTIFICATE-----"
 const dummyIntermediateCaCert = "-----BEGIN CERTIFICATE-----\n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\nijrJCBNELSQ8gsZSfXBJ/MEkXA==\n-----END CERTIFICATE-----"
 const dummyBadCaCert = "-----BEGIN CERTIFICATE-----\n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\n-----END CERTIFICATE-----"
@@ -92,14 +98,22 @@ func hashCsrTemplate(hashF hash.Hash, csrTemplate *x509.CertificateRequest) (dig
 
 // testCmd represents the test command
 var testCmd = &cobra.Command{
-	Use:   "test",
-	Short: "Test connectivity to the socket for some encrypt/decrypt",
-
+	Use:     "test",
+	Short:   "Test connectivity to the socket for some encrypt/decrypt",
+	GroupID: "kmscmdsgrpsupporting",
+	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := InitViperSubCmdE(viper.GetViper(), cmd, &viperFlagsTest); err != nil {
+			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			return err
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		time.Sleep(2 * time.Second)
 
 		g := &errgroup.Group{}
-		if loop {
+		if viperFlagsTest.Loop {
 			g.Go(loopTestRun)
 		} else {
 			g.Go(runTest)
@@ -115,7 +129,7 @@ func loopTestRun() error {
 		_ = runTest()
 		time.Sleep(10 * time.Second)
 		count++
-		if count > maxLoops {
+		if count > viperFlagsTest.MaxLoops {
 			break
 		}
 	}
@@ -125,7 +139,7 @@ func loopTestRun() error {
 func runTest() error {
 	// Run Istio e2e tests against the socket
 
-	ictx, icancel, ic, err := istio.GetClientSocket(socketPath, timeout)
+	ictx, icancel, ic, err := istio.GetClientSocket(viperFlagsTest.SocketPath, viperFlagsTest.Timeout)
 	defer icancel()
 	if err != nil {
 		logrus.Fatal(err)
@@ -212,7 +226,7 @@ func runTest() error {
 		return err
 	}
 	var out string
-	if debug {
+	if logrus.GetLevel() >= logrus.DebugLevel {
 		out = string(loadSKEYResp.PlaintextSkey)
 	} else {
 		out = "Success"
@@ -458,20 +472,18 @@ func runTest() error {
 
 func init() {
 	rootCmd.AddCommand(testCmd)
-	testCmd.PersistentFlags().StringVar(&socketPath, "socket", filepath.Join(os.TempDir(), "run", "hsm-plugin-server.sock"), "Unix Socket")
-	testCmd.Flags().BoolVar(&loop, "loop", false, "Should we run the test in a loop?")
-	testCmd.Flags().DurationVar(&loopTime, "loop-sleep", 10, "How many seconds to sleep between test runs ")
-	testCmd.Flags().IntVar(&maxLoops, "max-loops", 100, "How many seconds to sleep between test runs ")
 
-	testCmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout Duration")
-	// Here you will define your flags and configuration settings.
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// testCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// Since this project uses Viper bind with Cobra flags, we generally do not need to use "Flags().*Var"
+	// (like StringVar, BoolVar, Uint16Var, etc...) as we do not need to access the cobra flag values directly. This is
+	// because we use Viper to retrieve the values of the flags.
 
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// testCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	testCmd.Flags().Bool("loop", false, "Should we run the test in a loop? Env var: K8S_KMS_PLUGIN_TEST_LOOP")
+	testCmd.Flags().Duration("loop-sleep", 10*time.Second, "How many seconds to sleep between test runs. Env var: K8S_KMS_PLUGIN_TEST_LOOP_SLEEP")
+	testCmd.Flags().Int("max-loops", 100, "How many seconds to sleep between test runs. Env var: K8S_KMS_PLUGIN_TEST_LOOP_SLEEP")
+
+	// Socket & Timeout
+	testCmd.Flags().String("socket", filepath.Join(os.TempDir(), "run", "hsm-plugin-server.sock"), "Unix Socket. Example: /run/user/$(id -u $USER)/k8s-kms-plugin.sock. Env var: K8S_KMS_PLUGIN_TEST_SOCKET")
+	testCmd.Flags().Duration("timeout", 30*time.Second, "KMS timeout. Env var: K8S_KMS_PLUGIN_TEST_TIMEOUT")
 }
 
 func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCert []byte, err error) {

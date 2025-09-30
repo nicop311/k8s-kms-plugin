@@ -1,3 +1,12 @@
+/*
+ * Copyright 2025 Thales Group
+ * SPDX-License-Identifier: MIT
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
 package providers
 
 import (
@@ -8,6 +17,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
+	"os"
+	"reflect"
+	"testing"
+	"time"
+
 	"github.com/ThalesGroup/crypto11"
 	"github.com/ThalesGroup/gose"
 	"github.com/ThalesGroup/gose/jose"
@@ -16,11 +31,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/miekg/pkcs11"
 	"github.com/stretchr/testify/require"
-	"io"
-	"os"
-	"reflect"
-	"testing"
-	"time"
 
 	k8s "github.com/ThalesGroup/k8s-kms-plugin/apis/k8s/v1beta1"
 )

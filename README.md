@@ -80,6 +80,23 @@ k8s-kms-plugin serve \
 
 Read the [QUICKSTART.md](QUICKSTART.md).
 
+## Usage
+
+### User Input Priority: CLI > Env Vars > Config File > Default
+
+`k8s-kms-plugin` allows users to configure settings through multiple sources, with the highest priority given to CLI flags, followed by environment variables, and then configuration files. The default settings are used if no other sources provide a value.
+
+Each CLI flag (e.g. `--log-level`) has a corresponding environment variable (e.g. `KMS_K8S_PLUGIN_LOG_LEVEL`) and a config file entry (e.g. `log-level` in YAML/TOML/JSON).
+
+| Priority Order           | Source                              | Example                         |
+|--------------------------|-------------------------------------|---------------------------------|
+| 1️⃣ CLI Flag             | `--log-level debug`                 | Highest priority                |
+| 2️⃣ Environment Variable | `KMS_K8S_PLUGIN_LOG_LEVEL=trace`    | Overrides config file & default |
+| 3️⃣ Config File          | `log-level: warn` in YAML/TOML/JSON | Overrides default               |
+| 4️⃣ Default Value        | `info` (from Cobra)                 | Used if nothing else is set     |
+
+Flags are handled by [Cobra](https://github.com/spf13/cobra), environment variables, and config files are ahhandled by [Viper](https://github.com/spf13/viper).
+
 ## Deployment scenarios
 
 This plugin is designed to be deployed in 2 configurations
@@ -156,11 +173,11 @@ During the release workflow, certificates and signatures of artifacts are genera
 They are signed by a tool named cosign using a keyless mode.
 It required an authentication by clicking in links present in logs.
 
-![Screenshot of one example of logs containing three authentication links generating tokens](docs/images/AuthLinksCosign.png)
+![Screenshot of one example of logs containing three authentication links generating tokens](docs/images/cosign/AuthLinksCosign.png)
 
 Once you click on one, you can submit a verification code that will redirect you to three types of authentication. Then click on Github authentication.
 
- ![Screenshot of the interface for submitting a code](docs/images/CodeSubmit.png)
+ ![Screenshot of the interface for submitting a code](docs/images/cosign/CodeSubmit.png)
 
 Do these actions for every authentication links and the signatures and the certificates will be generated with the artifacts in the release.
 
