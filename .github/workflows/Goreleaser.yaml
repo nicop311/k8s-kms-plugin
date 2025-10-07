@@ -17,7 +17,7 @@ jobs:
         - name: setup go version
           uses: actions/setup-go@v6
           with:
-            go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
+            go-version-file: go.mod # same version than the one in the go.mod
 
         - name: Show go version
           run: go version
