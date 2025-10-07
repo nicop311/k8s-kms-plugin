@@ -36,7 +36,7 @@ runs:
   steps:
     # Install go with specific version
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ inputs.go-version }} # same version than the one in the go.mod or in the .go-version
      # Register to ghcr.io container Registry
@@ -48,10 +48,10 @@ runs:
         password: ${{ inputs.registry_password }} 
     # Install ko to publish container images
     - name: Set up Ko
-      uses: ko-build/setup-ko@v0.7
+      uses: ko-build/setup-ko@v0.9
     # Install cosign to sign artfacts with goreleaser 
     - name: Install Cosign
-      uses: sigstore/cosign-installer@v3.5.0
+      uses: sigstore/cosign-installer@v3.10.0
     # Get LDFLAGS with a makefile command
     - shell: bash
       name: Get LDFLAGS

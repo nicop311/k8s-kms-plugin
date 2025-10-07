@@ -8,11 +8,20 @@
 
 This plugin will also run in proxy mode which can connect to a remote plugin service running in a secure network device (Key Managers)
 
-> ⚠️ **Droping support of KMS v1**: Newer version of the `k8s-kms-plugin` droped support for [Kubernetes KMSv1](https://pkg.go.dev/k8s.io/kms@v0.33.3/apis/v1beta1),
+> ⚠️ **Droping support of KMS v1**: Newer version of the `k8s-kms-plugin` droped support for [Kubernetes KMSv1](https://pkg.go.dev/k8s.io/kms@v0.34.1/apis/v1beta1),
 > as KMSv1 is deprecated in Kubernetes v1.28 and disabled by default since Kubernetes v1.29.
 
 > 🚧 **Note**: This documentation is under construction and needs to be updated to remove/archive references to KMS v1 and
 > document KMS v2 operations.
+
+# 🚤 Quick Start 🚀
+
+TL;DR: For a quick start experience, try the `k8s-kms-plugin` with software (virtual) HSM such as:
+
+- [SoftHSMv2 & `k8s-kms-plugin`](./docs/softhsm-v2.md)
+- [Software TPM Emulator & `k8s-kms-plugin`](./docs/software-tpm-emulator.md)
+
+# Table of Contents
 
 - [1. Definions \& Accronyms 🔎](#1-definions--accronyms-)
 - [2. Overview 🔭](#2-overview-)
