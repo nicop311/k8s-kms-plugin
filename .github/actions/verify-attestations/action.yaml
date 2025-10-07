@@ -27,7 +27,7 @@ runs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: ${{ inputs.go-version }} # same version than the one in the go.mod or in the .go-version
+        go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
 
     - shell: bash 
       name : Install dependencies
