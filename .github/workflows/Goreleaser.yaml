@@ -47,7 +47,6 @@ jobs:
           id : publish-artifacts
           uses: ./.github/actions/publish-release
           with:
-            go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
             github_token : ${{ secrets.GITHUB_TOKEN }}
             registry: ghcr.io
             registry_username: ${{ github.actor }}
@@ -92,11 +91,10 @@ jobs:
           - name: Checkout
             uses: actions/checkout@v5
             with:
-                  fetch-depth: 0      
+              fetch-depth: 0      
           - name: Verify provenance attestations
             id : slsa-verifier
             uses: ./.github/actions/verify-attestations
             with:
-              go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
               github_token : ${{ secrets.GITHUB_TOKEN }}
               image: ${{needs.goreleaser.outputs.image}}@${{needs.goreleaser.outputs.digest}} 
