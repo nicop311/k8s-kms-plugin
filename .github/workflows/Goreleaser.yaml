@@ -7,8 +7,20 @@ on:
     # run only against tags
     tags:
       - "*"
+    branches:
+      - update-go1.25.1 # TODO : remove after testing
       
 jobs:
+    show-setup-go-version-from-file:
+      runs-on: ubuntu-latest
+      steps:
+        - name: setup go version
+          uses: actions/setup-go@v6
+          with:
+            go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
+
+        - name: Show go version
+          run: go version
 
     goreleaser:
       runs-on: ubuntu-latest
