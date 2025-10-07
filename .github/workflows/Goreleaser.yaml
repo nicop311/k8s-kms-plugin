@@ -11,17 +11,22 @@ on:
       - update-go1.25.1 # TODO : remove after
       
 jobs:
-    show-setup-go-version-from-file:
+    setup-go-version-from-file:
       runs-on: ubuntu-latest
       steps:
         - uses: actions/checkout@v5
         - name: setup go version
+          id: setup-go
           uses: actions/setup-go@v6
           with:
             go-version-file: ${{ github.workspace }}/go.mod # same version than the one in the go.mod
 
-        - name: Show go version
+        - name: Show go version from command
           run: go version
+
+        - name: Show go version from github action
+          run: echo ${{ steps.setup-go.outputs.go-version }}
+
 
     goreleaser:
       runs-on: ubuntu-latest
