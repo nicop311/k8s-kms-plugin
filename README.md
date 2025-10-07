@@ -530,7 +530,7 @@ It required an authentication by clicking in links present in logs.
 
 Once you click on one, you can submit a verification code that will redirect you to three types of authentication. Then click on Github authentication.
 
- ![Screenshot of the interface for submitting a code](docs/images/cosign/CodeSubmit.png)
+![Screenshot of the interface for submitting a code](docs/images/cosign/CodeSubmit.png)
 
 Do these actions for every authentication links and the signatures and the certificates will be generated with the artifacts in the release.
 
