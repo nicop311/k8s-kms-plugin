@@ -9,7 +9,6 @@ on:
       - "*"
       
 jobs:
-
     goreleaser:
       runs-on: ubuntu-latest
       env: 
@@ -22,14 +21,13 @@ jobs:
         digest: ${{ steps.publish-artifacts.outputs.digest }}
       steps:
         - name: Checkout
-          uses: actions/checkout@v4
+          uses: actions/checkout@v5
           with:
                 fetch-depth: 0      
         - name: Publish Artifacts
           id : publish-artifacts
           uses: ./.github/actions/publish-release
           with:
-            go-version: 1.23.6
             github_token : ${{ secrets.GITHUB_TOKEN }}
             registry: ghcr.io
             registry_username: ${{ github.actor }}
@@ -43,7 +41,7 @@ jobs:
         actions: read # To read the workflow path.
         id-token: write # To sign the provenance.
         contents: write # To add assets to a release.
-      uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.10.0
+      uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
       with:
         base64-subjects: "${{ needs.goreleaser.outputs.hashes }}"
         upload-assets: true 
@@ -54,7 +52,7 @@ jobs:
         actions: read
         id-token: write
         packages: write
-      uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v1.10.0
+      uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
       with:
         image: ${{ needs.goreleaser.outputs.image }}
         digest: ${{ needs.goreleaser.outputs.digest }}
@@ -72,13 +70,12 @@ jobs:
         packages: write
       steps:
           - name: Checkout
-            uses: actions/checkout@v4
+            uses: actions/checkout@v5
             with:
-                  fetch-depth: 0      
+              fetch-depth: 0      
           - name: Verify provenance attestations
             id : slsa-verifier
             uses: ./.github/actions/verify-attestations
             with:
-              go-version: 1.23.6
               github_token : ${{ secrets.GITHUB_TOKEN }}
               image: ${{needs.goreleaser.outputs.image}}@${{needs.goreleaser.outputs.digest}} 
