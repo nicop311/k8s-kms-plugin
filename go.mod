@@ -1,6 +1,6 @@
 module github.com/ThalesGroup/k8s-kms-plugin
 
-go 1.25.8
+go 1.26.1
 
 require (
 	github.com/golang/protobuf v1.5.4
@@ -43,8 +43,8 @@ require (
 )
 
 require (
-	github.com/ThalesGroup/crypto11 v1.6.1-rc1
-	github.com/ThalesGroup/gose v0.12.1-rc1
+	github.com/ThalesGroup/crypto11 v1.7.0-rc1
+	github.com/ThalesGroup/gose v0.13.0-rc1
 	github.com/hashicorp/go-version v1.8.0
 	k8s.io/kms v0.35.3
 )
@@ -64,6 +64,6 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260319201613-d00831a3d3e7 // indirect
 )
