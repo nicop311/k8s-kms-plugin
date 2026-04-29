@@ -14,6 +14,7 @@ import (
 	"crypto"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -170,7 +171,6 @@ type P11 struct {
 	hmacCkaId    []byte                       // Active HMAC key CKA_ID for AES-CBC + HMAC
 	hmacCkaLabel string                       // Active HMAC key CKA_LABEL utf8 for AES-CBC + HMAC
 	algorithm    jose.Alg                     // The active cryptographic algorithm being used
-	mlkemVariant string                       // ML-KEM parameter set: "512", "768" or "1024" (only used when algorithm == AlgMLKEM)
 
 	// Istio related fields
 	cid []byte // Certificate Identifier
@@ -218,7 +218,6 @@ func NewP11(
 	hmacKeyLabel string,
 	hmacCkaId string,
 	algorithm jose.Alg,
-	mlkemVariant string, // "512", "768" or "1024"; only used when algorithm == AlgMLKEM
 
 	// key rotation
 	isKeyRotation bool,
@@ -234,7 +233,6 @@ func NewP11(
 		config:       config,
 		createKey:    createKey,
 		algorithm:    algorithm,
-		mlkemVariant: mlkemVariant,
 
 		// only in case of key rotation
 		oldConfig:    oldConfig,
@@ -517,7 +515,11 @@ func (p *P11) loadKEKbyID(ctx *crypto11.Context, kekId, kekLabel []byte) (encryp
 	if aead, err = handle.NewGCM(); err != nil {
 		return
 	}
-	if aek, err = gose.NewAesGcmCryptor(aead, rng, string(kekId), jose.AlgA256GCM, kekKeyOps); err != nil {
+	var gcmAlg jose.Alg
+	if gcmAlg, err = aesGcmAlgFromKey(ctx, handle); err != nil {
+		return
+	}
+	if aek, err = gose.NewAesGcmCryptor(aead, rng, string(kekId), gcmAlg, kekKeyOps); err != nil {
 		return
 	}
 	decryptor = gose.NewJweDirectDecryptorAeadImpl([]gose.AeadEncryptionKey{aek})
@@ -537,15 +539,47 @@ func (p *P11) Close() (err error) {
 
 // makeAeadKey creates a new AES GCM key encryption key from the given HSM key
 // and random reader. It returns a gose.AeadEncryptionKey and an error.
-func (p *P11) makeAeadKey(rng io.Reader, kek *crypto11.SecretKey) (aek gose.AeadEncryptionKey, err error) {
+func (p *P11) makeAeadKey(ctx *crypto11.Context, rng io.Reader, kek *crypto11.SecretKey) (aek gose.AeadEncryptionKey, err error) {
 	var aead cipher.AEAD
 	if aead, err = kek.NewGCM(); err != nil {
 		return nil, fmt.Errorf("error while creating new gcm cipher: %v", err)
 	}
-	if aek, err = gose.NewAesGcmCryptor(aead, rng, p.kekCkaLabel, jose.AlgA256GCM, kekKeyOps); err != nil {
+	alg, err := aesGcmAlgFromKey(ctx, kek)
+	if err != nil {
+		return nil, fmt.Errorf("error detecting AES-GCM key size: %v", err)
+	}
+	if aek, err = gose.NewAesGcmCryptor(aead, rng, p.kekCkaLabel, alg, kekKeyOps); err != nil {
 		return nil, fmt.Errorf("error while creating aead key: %v", err)
 	}
 	return
+}
+
+// aesGcmAlgFromKey queries the HSM key's CKA_VALUE_LEN attribute and maps the
+// key length in bytes to the corresponding jose AES-GCM algorithm constant.
+func aesGcmAlgFromKey(ctx *crypto11.Context, key *crypto11.SecretKey) (jose.Alg, error) {
+	attr, err := ctx.GetAttribute(key, crypto11.CkaValueLen)
+	if err != nil {
+		return "", fmt.Errorf("cannot read CKA_VALUE_LEN: %w", err)
+	}
+	var keyLenBytes uint64
+	switch len(attr.Value) {
+	case 4:
+		keyLenBytes = uint64(binary.NativeEndian.Uint32(attr.Value))
+	case 8:
+		keyLenBytes = binary.NativeEndian.Uint64(attr.Value)
+	default:
+		return "", fmt.Errorf("unexpected CKA_VALUE_LEN size %d", len(attr.Value))
+	}
+	switch keyLenBytes {
+	case 16:
+		return jose.AlgA128GCM, nil
+	case 24:
+		return jose.AlgA192GCM, nil
+	case 32:
+		return jose.AlgA256GCM, nil
+	default:
+		return "", fmt.Errorf("unsupported AES key length %d bytes", keyLenBytes)
+	}
 }
 
 // getIVFromDecryptRequest extracts the Initialization Vector from a KMS v2
@@ -658,8 +692,8 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 		}
 
 		switch actualAlgo {
-		case jose.AlgA256GCM:
-			logrus.Tracef("p11:Decrypt case %s", jose.AlgA256GCM)
+		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM:
+			logrus.Tracef("p11:Decrypt case %s", actualAlgo)
 
 			// get kek by CKA_ID
 			var kek *crypto11.SecretKey
@@ -671,7 +705,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 			}
 
 			var aek gose.AeadEncryptionKey
-			if aek, err = p.makeAeadKey(rng, kek); err != nil {
+			if aek, err = p.makeAeadKey(actualCtx, rng, kek); err != nil {
 				logrus.WithError(err).Error("error while creating aead key")
 				return nil, err
 			}
@@ -799,13 +833,13 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 	if encryptor = p.encryptors[p.GetKekKeyIdString()]; encryptor == nil {
 		// Select algorithm
 		switch p.algorithm {
-		case jose.AlgA256GCM:
-			logrus.Tracef("p11:Encrypt case %s", jose.AlgA256GCM)
+		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM:
+			logrus.Tracef("p11:Encrypt case %s", p.algorithm)
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
 				logrus.WithError(err).WithFields(logrus.Fields{
-					"algorithm": jose.AlgA256GCM,
+					"algorithm": p.algorithm,
 					"label":     p.kekCkaLabel,
 					"keyId":     p.GetKekKeyIdString(),
 				}).Errorf("Encrypt: cannot find a symmetric key")
@@ -820,7 +854,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			}
 			var aek gose.AeadEncryptionKey
 			// TODO investigate why the aek result does not have a kid
-			if aek, err = p.makeAeadKey(rng, kek); err != nil {
+			if aek, err = p.makeAeadKey(p.ctx, rng, kek); err != nil {
 				logrus.WithError(err).Errorf("Encrypt: cannot create an aead key")
 				return
 			}
@@ -1102,7 +1136,7 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 
 		var err error
 		switch algorithm {
-		case jose.AlgA256GCM, jose.AlgA256CBC:
+		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM, jose.AlgA256CBC:
 			// Find the key in the KMS for AES symmetric algorithms
 			var symKey *crypto11.SecretKey
 			if symKey, err = ctx.FindKey(id, label); nil != err {
