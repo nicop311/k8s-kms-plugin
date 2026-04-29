@@ -63,10 +63,11 @@ type ViperFlagsServe struct {
 
 	// PKCS #11 CKA_ID and CKA_LABEL of active KEK key
 	CreateKey    bool   `mapstructure:"auto-create"`
-	DekKeyLabel  string `mapstructure:"p11-key-label"`  // active DEK key CKA_LABEL
-	HmacKeyID    string `mapstructure:"p11-hmac-id"`    // active HMAC key CKA_ID
-	HmacKeyLabel string `mapstructure:"p11-hmac-label"` // active HMAC key CKA_LABEL
-	KekKeyID     string `mapstructure:"p11-key-id"`     // active KEK key CKA_ID
+	DekKeyLabel  string `mapstructure:"p11-key-label"`      // active DEK key CKA_LABEL
+	HmacKeyID    string `mapstructure:"p11-hmac-id"`        // active HMAC key CKA_ID
+	HmacKeyLabel string `mapstructure:"p11-hmac-label"`     // active HMAC key CKA_LABEL
+	KekKeyID     string `mapstructure:"p11-key-id"`         // active KEK key CKA_ID
+	MlKemVariant string `mapstructure:"p11-ml-kem-variant"` // ML-KEM parameter set:  "512", "768" or "1024"
 }
 
 // Declare the viper CLI flag values buffer
@@ -82,6 +83,7 @@ var (
 	AESGCM     = Algorithm{"aes-gcm"}
 	AESCBC     = Algorithm{"aes-cbc"}
 	RSAOAEP    = Algorithm{"rsa-oaep"}
+	MLKEM      = Algorithm{"ml-kem"}
 )
 
 func algFromString(s string) (jose.Alg, error) {
@@ -92,6 +94,8 @@ func algFromString(s string) (jose.Alg, error) {
 		return jose.AlgA256CBC, nil
 	case RSAOAEP.slug:
 		return jose.AlgRSAOAEP, nil
+	case MLKEM.slug:
+		return providers.AlgMLKEM, nil
 	default:
 		return "", gose.ErrInvalidAlgorithm
 	}
@@ -220,9 +224,13 @@ func init() {
 
 	serveCmd.PersistentFlags().Bool("allow-any", false, "Allow any device (accepts all ids/secrets).")
 
-	serveCmd.PersistentFlags().String("algorithm", "aes-gcm", "Set the algorithm for encryption/decryption. Possible values: aes-gcm, aes-cbc, rsa-oaep.")
+	serveCmd.PersistentFlags().String("algorithm", "aes-gcm", "Set the algorithm for encryption/decryption. Possible values: aes-gcm, aes-cbc, rsa-oaep, ml-kem.")
 	serveCmd.RegisterFlagCompletionFunc("algorithm", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"aes-gcm", "aes-cbc", "rsa-oaep"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"aes-gcm", "aes-cbc", "rsa-oaep", "ml-kem"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	serveCmd.PersistentFlags().String("p11-ml-kem-variant", "768", "ML-KEM parameter set when algorithm is ml-kem. Possible values: 512, 768, 1024.")
+	serveCmd.RegisterFlagCompletionFunc("p11-ml-kem-variant", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"512", "768", "1024"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	// These flags comes from root
@@ -308,6 +316,7 @@ func initProvider() (p providers.Provider, err error) {
 		vprFlgsServe.HmacKeyLabel,
 		vprFlgsServe.HmacKeyID,
 		alg,
+		vprFlgsServe.MlKemVariant,
 		false, // no key rotation
 		nil,
 		"",
