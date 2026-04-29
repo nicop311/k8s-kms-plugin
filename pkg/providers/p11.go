@@ -52,6 +52,11 @@ var (
 	}
 )
 
+// AlgMLKEM is the sentinel used in P11.algorithm to select the ML-KEM hybrid encryption path.
+// Encryption produces a compact JWE using the algorithm negotiated from the ML-KEM parameter set
+// (AlgMLKEM768KMAC256, AlgMLKEM1024KMAC256, …) via gose's JweMlKemEncryptorImpl.
+const AlgMLKEM jose.Alg = "ml-kem"
+
 // GenerateDEK generates a Data Encryption Key (DEK) and encrypts it using
 // the provided JWE encryptor. It first creates a random 32-byte symmetric
 // key, converts it to a JWK format, and then encrypts the JWK using the
@@ -165,6 +170,7 @@ type P11 struct {
 	hmacCkaId    []byte                       // Active HMAC key CKA_ID for AES-CBC + HMAC
 	hmacCkaLabel string                       // Active HMAC key CKA_LABEL utf8 for AES-CBC + HMAC
 	algorithm    jose.Alg                     // The active cryptographic algorithm being used
+	mlkemVariant string                       // ML-KEM parameter set: "512", "768" or "1024" (only used when algorithm == AlgMLKEM)
 
 	// Istio related fields
 	cid []byte // Certificate Identifier
@@ -212,6 +218,7 @@ func NewP11(
 	hmacKeyLabel string,
 	hmacCkaId string,
 	algorithm jose.Alg,
+	mlkemVariant string, // "512", "768" or "1024"; only used when algorithm == AlgMLKEM
 
 	// key rotation
 	isKeyRotation bool,
@@ -224,9 +231,10 @@ func NewP11(
 ) (p *P11, err error) {
 	p = &P11{
 		// active KEK parameters
-		config:    config,
-		createKey: createKey,
-		algorithm: algorithm,
+		config:       config,
+		createKey:    createKey,
+		algorithm:    algorithm,
+		mlkemVariant: mlkemVariant,
 
 		// only in case of key rotation
 		oldConfig:    oldConfig,
@@ -330,22 +338,27 @@ func NewP11(
 	}
 
 	if p.createKey {
-		// Check if the default key exists - if not, create it
-		var foundDefaultDek *crypto11.SecretKey
-		if foundDefaultDek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
-			return
-		}
-		if nil == foundDefaultDek {
-			var newDekUUID uuid.UUID
-			if newDekUUID, err = uuid.NewRandom(); nil != err {
+		if p.algorithm == AlgMLKEM {
+			// ML-KEM key pairs must be provisioned separately on the HSM; auto-create is not supported.
+			logrus.Warn("NewP11: --auto-create is not supported for ml-kem; ML-KEM key pair must be created separately on the HSM")
+		} else {
+			// Check if the default key exists - if not, create it
+			var foundDefaultDek *crypto11.SecretKey
+			if foundDefaultDek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
 				return
 			}
-			var uuidBytes []byte
-			if uuidBytes, err = newDekUUID.MarshalText(); nil != err {
-				return
-			}
-			if _, err = p.ctx.GenerateSecretKeyWithLabel(uuidBytes, p.GetKekCkaLabelByteA(), 256, crypto11.CipherAES); nil != err {
-				return
+			if nil == foundDefaultDek {
+				var newDekUUID uuid.UUID
+				if newDekUUID, err = uuid.NewRandom(); nil != err {
+					return
+				}
+				var uuidBytes []byte
+				if uuidBytes, err = newDekUUID.MarshalText(); nil != err {
+					return
+				}
+				if _, err = p.ctx.GenerateSecretKeyWithLabel(uuidBytes, p.GetKekCkaLabelByteA(), 256, crypto11.CipherAES); nil != err {
+					return
+				}
 			}
 		}
 	}
@@ -624,6 +637,11 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 		actualHmacCkaLabel = p.hmacCkaLabel
 	}
 
+	// ML-KEM uses a binary envelope instead of JWE — handle it before the JWE decryptor path.
+	if actualAlgo == AlgMLKEM {
+		return p.decryptMLKEMWithContext(req, actualCtx)
+	}
+
 	if decryptor = actualDecryptors[req.GetKeyId()]; decryptor == nil {
 		// Random source from the HSM (pkcs11 context)
 		var rng io.Reader
@@ -769,6 +787,11 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 //     // NOT	SURE IF IT IS NECESSARY FOR US
 //     Uid string
 func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *k8skmsv2.EncryptResponse, err error) {
+	// ML-KEM uses a binary envelope instead of JWE — handle it before the JWE encryptor path.
+	if p.algorithm == AlgMLKEM {
+		return p.encryptMLKEM(ctx, req)
+	}
+
 	var encryptor gose.JweEncryptor
 	var out string // buffer for the EncryptResponse.Ciphertext
 
@@ -1014,6 +1037,56 @@ type keyGenerationParameters struct {
 	cipher *crypto11.SymmetricCipher
 }
 
+// encryptMLKEM encrypts req.Plaintext using ML-KEM hybrid encryption via gose JWE.
+// The HSM performs the KEM encapsulation; the shared secret is extracted and passed to
+// gose's KMAC KDF before AES-GCM content encryption, producing a compact JWE string.
+//
+// NOTE: this replaces the previous custom binary envelope format (mlkem_envelope.go).
+// Ciphertexts produced by older plugin versions are NOT decryptable by this implementation.
+func (p *P11) encryptMLKEM(ctx context.Context, req *k8skmsv2.EncryptRequest) (*k8skmsv2.EncryptResponse, error) {
+	kp, err := p.ctx.FindMLKEMKeyPair(p.kekCkaId, p.GetKekCkaLabelByteA())
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: cannot find ML-KEM key pair (label=%s id=%x): %w", p.kekCkaLabel, p.kekCkaId, err)
+	}
+	hsmKey, err := hsm.NewDecapsPrivMlKemHsmKey(kp, p.GetKekKeyIdString())
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: failed to create HSM key wrapper: %w", err)
+	}
+	encKey, err := hsmKey.Encapsulator()
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: failed to get encapsulation key: %w", err)
+	}
+	rng, err := p.ctx.NewRandomReader()
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: cannot get HSM random reader: %w", err)
+	}
+	encryptor, err := gose.NewJweMlKemEncryptorImpl(encKey, rng)
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: failed to create JWE encryptor: %w", err)
+	}
+	jweStr, err := encryptor.Encrypt(req.GetPlaintext(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("encryptMLKEM: JWE encryption failed: %w", err)
+	}
+	logrus.Tracef("encryptMLKEM: produced JWE of %d bytes", len(jweStr))
+	return &k8skmsv2.EncryptResponse{
+		Ciphertext: []byte(jweStr),
+		KeyId:      p.GetKekKeyIdString(),
+	}, nil
+}
+
+// decryptMLKEMWithContext decrypts a compact JWE produced by encryptMLKEM using actualCtx.
+// Supports both the active and rotation HSM contexts.
+func (p *P11) decryptMLKEMWithContext(req *k8skmsv2.DecryptRequest, actualCtx *crypto11.Context) ([]byte, error) {
+	keyStore := hsm.NewDecapsPrivMlKemHsmKeyStore(actualCtx)
+	decryptor := gose.NewJweMlKemDecryptorImpl(keyStore)
+	plaintext, _, err := decryptor.Decrypt(string(req.GetCiphertext()))
+	if err != nil {
+		return nil, fmt.Errorf("decryptMLKEM: JWE decryption failed: %w", err)
+	}
+	return plaintext, nil
+}
+
 // FindCkaAttrByIdOrLabel find a CKA attribute like CKA_ID or CKA_LABEL by id or by label.
 func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr crypto11.AttributeType, id, label []byte) ([]byte, error) {
 	var outBuf []byte // output buffers
@@ -1061,6 +1134,19 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 			} else {
 				outBuf = attr.Value
 			}
+		case AlgMLKEM:
+			// Find the ML-KEM key pair on the HSM
+			var mlkemKP crypto11.MLKEMKeyPair
+			if mlkemKP, err = ctx.FindMLKEMKeyPair(id, label); err != nil {
+				logrus.WithError(err).Errorf("FindCkaAttrByIdOrLabel: cannot find ML-KEM key pair with label %x or id %x", label, id)
+				return nil, err
+			}
+			var attr *crypto11.Attribute
+			if attr, err = ctx.GetAttribute(mlkemKP, ckaAttr); err != nil {
+				logrus.WithError(err).Errorf("FindCkaAttrByIdOrLabel: cannot get CKA_ attribute %v for ML-KEM key with label %x or id %x", ckaAttr, label, id)
+				return nil, err
+			}
+			outBuf = attr.Value
 		}
 	} else {
 		logrus.Errorf("FindCkaAttrByIdOrLabel: cannot find a key with parameters id%x and label%x", id, label)
