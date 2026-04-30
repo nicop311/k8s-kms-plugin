@@ -566,6 +566,8 @@ func (p *P11) makeAeadKey(ctx *crypto11.Context, rng io.Reader, kek *crypto11.Se
 
 // aesGcmAlgFromKey queries the HSM key's CKA_VALUE_LEN attribute and maps the
 // key length in bytes to the corresponding jose AES-GCM algorithm constant.
+// Unlike mlkemAlgFromKey, an explicit ctx.GetAttribute call is required because
+// the key size is not exposed through the crypto11.SecretKey interface.
 func aesGcmAlgFromKey(ctx *crypto11.Context, key *crypto11.SecretKey) (jose.Alg, error) {
 	attr, err := ctx.GetAttribute(key, crypto11.CkaValueLen)
 	if err != nil {
@@ -589,6 +591,23 @@ func aesGcmAlgFromKey(ctx *crypto11.Context, key *crypto11.SecretKey) (jose.Alg,
 		return jose.AlgA256GCM, nil
 	default:
 		return "", fmt.Errorf("unsupported AES key length %d bytes", keyLenBytes)
+	}
+}
+
+// mlkemAlgFromKey returns the specific jose ML-KEM algorithm constant for the given key pair
+// by reading its parameter set directly via ParameterSet() — no ctx attribute lookup is needed
+// since the parameter set is part of the MLKEMKeyPair interface, similar to how RSA key pairs
+// carry their key type without requiring an extra attribute query.
+func mlkemAlgFromKey(kp crypto11.MLKEMKeyPair) (jose.Alg, error) {
+	switch kp.ParameterSet() {
+	case crypto11.MLKEM512:
+		return jose.AlgMLKEM512KMAC128, nil
+	case crypto11.MLKEM768:
+		return jose.AlgMLKEM768KMAC256, nil
+	case crypto11.MLKEM1024:
+		return jose.AlgMLKEM1024KMAC256, nil
+	default:
+		return "", fmt.Errorf("unsupported ML-KEM parameter set %d", kp.ParameterSet())
 	}
 }
 
@@ -1241,18 +1260,18 @@ func GetKeyIdAndLabel(p *P11, keyId string, keyLabel string) (resultKeyId []byte
 		}
 
 		if resultKeyLabelBytes, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithmFamily, crypto11.CkaLabel, resultKeyId, nil); err != nil {
-			logrus.WithError(err).Error("NewP11: failed to find key CKA_LABEL by CKA_ID '%s'", resultKeyId)
+			logrus.WithError(err).Errorf("NewP11: failed to find key CKA_LABEL by CKA_ID '%x'", resultKeyId)
 			return nil, "", err
 		}
 		resultKeyLabel = string(resultKeyLabelBytes)
 	} else if keyId == "" && keyLabel == "" {
-		errMsg := "NewP11: key ID (CKA_ID) and key label (CKA_LABEL) are both empty, please provide one of them"
-		logrus.WithError(err).Errorf(errMsg)
-		return nil, "", fmt.Errorf(errMsg)
+		const errMsg = "NewP11: key ID (CKA_ID) and key label (CKA_LABEL) are both empty, please provide one of them"
+		logrus.WithError(err).Error(errMsg)
+		return nil, "", errors.New(errMsg)
 	} else {
-		errMsg := "NewP11: both key ID (CKA_ID) and key label (CKA_LABEL) are provided, please provide only one"
-		logrus.WithError(err).Errorf(errMsg)
-		return nil, "", fmt.Errorf(errMsg)
+		const errMsg = "NewP11: both key ID (CKA_ID) and key label (CKA_LABEL) are provided, please provide only one"
+		logrus.WithError(err).Error(errMsg)
+		return nil, "", errors.New(errMsg)
 	}
 
 	return
