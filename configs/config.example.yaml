@@ -26,12 +26,17 @@ k8s-kms-plugin:
     #p11-slot: 0 # OPTIONAL token slot index for the HSM
 
     ### KEK related configurations
-    algorithm: "rsa-oaep" # Algorithm possible values: aes-gcm, aes-cbc, rsa-oaep
+    algorithm: "rsa-oaep" # Algorithm possible values: aes-gcm, aes-cbc, rsa-oaep, ml-kem
     p11-key-label: "my-key" # label of the kek inside the targeted token slot. MUST match the mechanism of the algorithm.
     #p11-key-id: aa22334455bc # KEK ID is mutually exclusive with 'p11-key-label'. Provide one or the other.
     # use hmac configurations for aes-cbc algorithm, to apply hmac authentication
     #p11-hmac-label: "my-hmac-key-for-cbc"
     #p11-hmac-id: 49c6b305210f # HMAC ID is mutually exclusive with 'p11-hmac-label'. Provide one or the other.
+    # ML-KEM (FIPS 203 / PKCS#11 v3.2) post-quantum hybrid encryption settings.
+    # Requires a PKCS#11 v3.2-capable HSM (e.g. SoftHSMv3). The key pair must be provisioned
+    # separately on the HSM; --auto-create is not supported for ml-kem.
+    # Example: algorithm: "ml-kem", p11-key-label: "my-mlkem-key", p11-ml-kem-variant: "768"
+    #p11-ml-kem-variant: "768" # ML-KEM parameter set. Possible values: 512, 768, 1024. Default: 768.
 
     ## Key rotation settings
     ## If this section is uncommented, the k8s-kms-plugin will start by rotating your kek.
