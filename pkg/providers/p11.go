@@ -53,10 +53,20 @@ var (
 	}
 )
 
-// AlgMLKEM is the sentinel used in P11.algorithm to select the ML-KEM hybrid encryption path.
-// Encryption produces a compact JWE using the algorithm negotiated from the ML-KEM parameter set
-// (AlgMLKEM768KMAC256, AlgMLKEM1024KMAC256, …) via gose's JweMlKemEncryptorImpl.
-const AlgMLKEM jose.Alg = "ml-kem"
+// Algorithm sentinels used in P11.algorithm for routing. Values match the user-facing
+// --algorithm-family flag slugs so serve.go can cast directly without a mapping function.
+// The actual jose algorithm constant used in JWE operations may differ (e.g. AlgAESGCM
+// dispatches to AlgA128/192/256GCM based on the HSM key's CKA_VALUE_LEN).
+const (
+	// AlgAESGCM routes to AES-GCM; key size is auto-detected from the HSM key.
+	AlgAESGCM jose.Alg = "aes-gcm"
+	// AlgAESCBC routes to AES-CBC + HMAC; the JWE uses jose.AlgA256CBC internally.
+	AlgAESCBC jose.Alg = "aes-cbc"
+	// AlgRSAOAEP routes to RSA-OAEP; the JWE uses jose.AlgRSAOAEP internally.
+	AlgRSAOAEP jose.Alg = "rsa-oaep"
+	// AlgMLKEM routes to ML-KEM hybrid encryption; variant is negotiated from the HSM key.
+	AlgMLKEM jose.Alg = "ml-kem"
+)
 
 // GenerateDEK generates a Data Encryption Key (DEK) and encrypts it using
 // the provided JWE encryptor. It first creates a random 32-byte symmetric
@@ -270,7 +280,7 @@ func NewP11(
 	}
 
 	// in case the user provide the CKA_ID or the CKA_LABEL of HMAC key
-	if p.algorithm == jose.AlgA256CBC {
+	if p.algorithm == AlgAESCBC {
 		p.hmacCkaId, p.hmacCkaLabel, err = GetKeyIdAndLabel(p, hmacCkaId, hmacKeyLabel)
 		if err != nil {
 			return
@@ -280,7 +290,7 @@ func NewP11(
 	// key rotation
 	if isKeyRotation {
 		// in case the user provide the OLD CKA_ID or the OLD CKA_LABEL of OLD HMAC key
-		if p.oldAlgorithm == jose.AlgA256CBC {
+		if p.oldAlgorithm == AlgAESCBC {
 			if oldHmacCkaId == "" && oldHmacKeyLabel != "" { // get id by label
 				// old HMAC
 				p.oldHmacCkaLabel = oldHmacKeyLabel
@@ -692,7 +702,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 		}
 
 		switch actualAlgo {
-		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM:
+		case AlgAESGCM:
 			logrus.Tracef("p11:Decrypt case %s", actualAlgo)
 
 			// get kek by CKA_ID
@@ -721,8 +731,8 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 				logrus.WithError(err).Error("error during decryption AAD should be nil")
 				return nil, err
 			}
-		case jose.AlgA256CBC:
-			logrus.Tracef("p11:Decrypt case %s", jose.AlgA256CBC)
+		case AlgAESCBC:
+			logrus.Tracef("p11:Decrypt case %s", AlgAESCBC)
 			// get kek by id
 			var kek *crypto11.SecretKey
 			if kek, err = actualCtx.FindKey(reqKekKeyIdByteA, nil); nil != err {
@@ -767,8 +777,8 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 				logrus.WithError(err).Error("error during decryption AAD should be nil")
 				return nil, err
 			}
-		case jose.AlgRSAOAEP:
-			logrus.Tracef("p11:Decrypt case %s", jose.AlgRSAOAEP)
+		case AlgRSAOAEP:
+			logrus.Tracef("p11:Decrypt case %s", AlgRSAOAEP)
 			// load pkcs11 context
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = actualCtx.FindRSAKeyPair(reqKekKeyIdByteA, nil); err != nil {
@@ -833,7 +843,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 	if encryptor = p.encryptors[p.GetKekKeyIdString()]; encryptor == nil {
 		// Select algorithm
 		switch p.algorithm {
-		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM:
+		case AlgAESGCM:
 			logrus.Tracef("p11:Encrypt case %s", p.algorithm)
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
@@ -866,8 +876,8 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 				return
 			}
 
-		case jose.AlgA256CBC:
-			logrus.Tracef("p11:Encrypt case %s", jose.AlgA256CBC)
+		case AlgAESCBC:
+			logrus.Tracef("p11:Encrypt case %s", AlgAESCBC)
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
@@ -917,8 +927,8 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 				return
 			}
 
-		case jose.AlgRSAOAEP:
-			logrus.Tracef("p11:Encrypt case %s", jose.AlgRSAOAEP)
+		case AlgRSAOAEP:
+			logrus.Tracef("p11:Encrypt case %s", AlgRSAOAEP)
 			//TODO generate a jwk with the kid of the public key. Ex :
 			//      {"kty":"EC",
 			//         "crv":"P-256",
@@ -1136,7 +1146,7 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 
 		var err error
 		switch algorithm {
-		case jose.AlgA128GCM, jose.AlgA192GCM, jose.AlgA256GCM, jose.AlgA256CBC:
+		case AlgAESGCM, AlgAESCBC:
 			// Find the key in the KMS for AES symmetric algorithms
 			var symKey *crypto11.SecretKey
 			if symKey, err = ctx.FindKey(id, label); nil != err {
@@ -1152,7 +1162,7 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 			} else {
 				outBuf = attr.Value
 			}
-		case jose.AlgRSAOAEP:
+		case AlgRSAOAEP:
 			// Find the key in the KMS for RSA asymmetric algorithms
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = ctx.FindRSAKeyPair(id, label); err != nil {
