@@ -53,7 +53,7 @@ var (
 	}
 )
 
-// Algorithm sentinels used in P11.algorithm for routing. Values match the user-facing
+// Algorithm sentinels used in P11.algorithmFamily for routing. Values match the user-facing
 // --algorithm-family flag slugs so serve.go can cast directly without a mapping function.
 // The actual jose algorithm constant used in JWE operations may differ (e.g. AlgAESGCM
 // dispatches to AlgA128/192/256GCM based on the HSM key's CKA_VALUE_LEN).
@@ -180,7 +180,7 @@ type P11 struct {
 	kekCkaLabel  string                       // Active KEK CKA_LABEL utf8
 	hmacCkaId    []byte                       // Active HMAC key CKA_ID for AES-CBC + HMAC
 	hmacCkaLabel string                       // Active HMAC key CKA_LABEL utf8 for AES-CBC + HMAC
-	algorithm    jose.Alg                     // The active cryptographic algorithm being used
+	algorithmFamily jose.Alg                  // The active cryptographic algorithm family being used
 
 	// Istio related fields
 	cid []byte // Certificate Identifier
@@ -194,7 +194,7 @@ type P11 struct {
 	oldKekCkaLabel  string                       // CKA_LABEL utf8 of old KEK being rotated
 	oldHmacCkaId    []byte                       // CKA_ID of old HMAC key being rotated
 	oldHmacCkaLabel string                       // CKA_LABEL utf8 of old HMAC key being rotated
-	oldAlgorithm    jose.Alg                     // algorithm of old KEK being rotated
+	oldAlgorithmFamily jose.Alg                  // algorithm family of old KEK being rotated
 }
 
 // NewP11 creates a new P11 instance.
@@ -242,11 +242,11 @@ func NewP11(
 		// active KEK parameters
 		config:       config,
 		createKey:    createKey,
-		algorithm:    algorithm,
+		algorithmFamily: algorithm,
 
 		// only in case of key rotation
-		oldConfig:    oldConfig,
-		oldAlgorithm: oldAlgorithm,
+		oldConfig:          oldConfig,
+		oldAlgorithmFamily: oldAlgorithm,
 	}
 
 	// Bootstrap the active Pkcs11 device or die
@@ -280,7 +280,7 @@ func NewP11(
 	}
 
 	// in case the user provide the CKA_ID or the CKA_LABEL of HMAC key
-	if p.algorithm == AlgAESCBC {
+	if p.algorithmFamily == AlgAESCBC {
 		p.hmacCkaId, p.hmacCkaLabel, err = GetKeyIdAndLabel(p, hmacCkaId, hmacKeyLabel)
 		if err != nil {
 			return
@@ -290,12 +290,12 @@ func NewP11(
 	// key rotation
 	if isKeyRotation {
 		// in case the user provide the OLD CKA_ID or the OLD CKA_LABEL of OLD HMAC key
-		if p.oldAlgorithm == AlgAESCBC {
+		if p.oldAlgorithmFamily == AlgAESCBC {
 			if oldHmacCkaId == "" && oldHmacKeyLabel != "" { // get id by label
 				// old HMAC
 				p.oldHmacCkaLabel = oldHmacKeyLabel
 
-				if p.oldHmacCkaId, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithm, crypto11.CkaId, nil, []byte(p.oldHmacCkaLabel)); err != nil {
+				if p.oldHmacCkaId, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithmFamily, crypto11.CkaId, nil, []byte(p.oldHmacCkaLabel)); err != nil {
 					logrus.WithError(err).Error("NewP11: failed to find HMAC CKA_ID by label")
 					return nil, err
 				}
@@ -304,7 +304,7 @@ func NewP11(
 				p.SetOldHmacKeyIdString(oldHmacCkaId)
 
 				var labelBuf []byte
-				if labelBuf, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithm, crypto11.CkaLabel, p.oldHmacCkaId, nil); err != nil {
+				if labelBuf, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithmFamily, crypto11.CkaLabel, p.oldHmacCkaId, nil); err != nil {
 					logrus.WithError(err).Error("NewP11: failed to find old HMAC CKA_LABEL by ID")
 					return nil, err
 				}
@@ -325,7 +325,7 @@ func NewP11(
 			logrus.Tracef("NewP11: kek key id (CKA_ID) is empty. Find CKA_ID by CKA_LABEL %s", k8sKekLabel)
 			p.oldKekCkaLabel = oldKekCkaLabel
 
-			if p.oldKekCkaId, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithm, crypto11.CkaId, nil, []byte(p.oldKekCkaLabel)); err != nil {
+			if p.oldKekCkaId, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithmFamily, crypto11.CkaId, nil, []byte(p.oldKekCkaLabel)); err != nil {
 				logrus.WithError(err).Error("NewP11: failed to find OLD KEK CKA_ID by label")
 				return nil, err
 			}
@@ -337,7 +337,7 @@ func NewP11(
 			p.SetOldKekKeyIdString(oldKekkeyid)
 
 			var labelBuf []byte
-			if labelBuf, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithm, crypto11.CkaLabel, p.oldKekCkaId, nil); err != nil {
+			if labelBuf, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithmFamily, crypto11.CkaLabel, p.oldKekCkaId, nil); err != nil {
 				logrus.WithError(err).Error("NewP11: failed to find OLD KEK CKA_LABEL by CKA_ID")
 				return nil, err
 			}
@@ -346,7 +346,7 @@ func NewP11(
 	}
 
 	if p.createKey {
-		if p.algorithm == AlgMLKEM {
+		if p.algorithmFamily == AlgMLKEM {
 			// ML-KEM key pairs must be provisioned separately on the HSM; auto-create is not supported.
 			logrus.Warn("NewP11: --auto-create is not supported for ml-kem; ML-KEM key pair must be created separately on the HSM")
 		} else {
@@ -670,13 +670,13 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 	if isRotation {
 		actualCtx = p.oldCtx
 		actualDecryptors = p.oldDecryptors
-		actualAlgo = p.oldAlgorithm
+		actualAlgo = p.oldAlgorithmFamily
 		actualHmacCkaId = p.oldHmacCkaId
 		actualHmacCkaLabel = p.oldHmacCkaLabel
 	} else {
 		actualCtx = p.ctx
 		actualDecryptors = p.decryptors
-		actualAlgo = p.algorithm
+		actualAlgo = p.algorithmFamily
 		actualHmacCkaId = p.hmacCkaId
 		actualHmacCkaLabel = p.hmacCkaLabel
 	}
@@ -832,7 +832,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 //     Uid string
 func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *k8skmsv2.EncryptResponse, err error) {
 	// ML-KEM uses a binary envelope instead of JWE — handle it before the JWE encryptor path.
-	if p.algorithm == AlgMLKEM {
+	if p.algorithmFamily == AlgMLKEM {
 		return p.encryptMLKEM(ctx, req)
 	}
 
@@ -842,14 +842,14 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 	// p.kid is initialized by NewP11
 	if encryptor = p.encryptors[p.GetKekKeyIdString()]; encryptor == nil {
 		// Select algorithm
-		switch p.algorithm {
+		switch p.algorithmFamily {
 		case AlgAESGCM:
-			logrus.Tracef("p11:Encrypt case %s", p.algorithm)
+			logrus.Tracef("p11:Encrypt case %s", p.algorithmFamily)
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
 				logrus.WithError(err).WithFields(logrus.Fields{
-					"algorithm": p.algorithm,
+					"algorithm": p.algorithmFamily,
 					"label":     p.kekCkaLabel,
 					"keyId":     p.GetKekKeyIdString(),
 				}).Errorf("Encrypt: cannot find a symmetric key")
@@ -882,7 +882,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
 				logrus.WithError(err).WithFields(logrus.Fields{
-					"algorithm": p.algorithm,
+					"algorithm": p.algorithmFamily,
 					"label":     p.kekCkaLabel,
 					"keyId":     p.GetKekKeyIdString(),
 				}).Errorf("Encrypt: cannot find a symmetric key")
@@ -905,7 +905,9 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			if blockMode, err = kek.NewCBCEncrypterCloser(iv); err != nil {
 				return nil, fmt.Errorf("error initializing block cipher: %v", err)
 			}
-			cbcKey := gose.NewAesCbcCryptor(blockMode, p.GetKekKeyIdString(), p.algorithm)
+			// jose.AlgA256CBC is the only standardized JWE AES-CBC key size (unlike AES-GCM
+			// which exists as AlgA128GCM / AlgA192GCM / AlgA256GCM). The key on the HSM must be 256-bit.
+			cbcKey := gose.NewAesCbcCryptor(blockMode, p.GetKekKeyIdString(), jose.AlgA256CBC)
 
 			// Initialize the hmac key for authentication TODO: consider allowing user to use a CKA_ID to get the HMAC key
 			var hmacp11Key *crypto11.SecretKey
@@ -950,7 +952,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = p.ctx.FindRSAKeyPair(p.kekCkaId, p.GetKekCkaLabelByteA()); err != nil {
 				logrus.WithError(err).WithFields(logrus.Fields{
-					"algorithm": p.algorithm,
+					"algorithm": p.algorithmFamily,
 					"label":     p.kekCkaLabel,
 					"keyId":     p.GetKekKeyIdString(),
 				}).Errorf("Encrypt: cannot find an rsa key pair with label %s", p.kekCkaLabel)
@@ -982,7 +984,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 				return
 			}
 		default:
-			logrus.Infof("Encrypt: not supported algorithm: %s", p.algorithm)
+			logrus.Infof("Encrypt: not supported algorithm: %s", p.algorithmFamily)
 		}
 	}
 
@@ -1215,7 +1217,7 @@ func GetKeyIdAndLabel(p *P11, keyId string, keyLabel string) (resultKeyId []byte
 		resultKeyLabel = keyLabel
 
 		keyLabelBytes := []byte(keyLabel)
-		resultKeyId, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithm, crypto11.CkaId, nil, keyLabelBytes)
+		resultKeyId, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithmFamily, crypto11.CkaId, nil, keyLabelBytes)
 		if err != nil {
 			logrus.WithError(err).Errorf("NewP11: failed to find key CKA_ID by CKA_LABEL '%s'", resultKeyLabel)
 			return nil, "", err
@@ -1238,7 +1240,7 @@ func GetKeyIdAndLabel(p *P11, keyId string, keyLabel string) (resultKeyId []byte
 			return nil, "", fmt.Errorf("NewP11: cannot decode string CKA_ID into hex expected format '%s': %w", keyId, err)
 		}
 
-		if resultKeyLabelBytes, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithm, crypto11.CkaLabel, resultKeyId, nil); err != nil {
+		if resultKeyLabelBytes, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithmFamily, crypto11.CkaLabel, resultKeyId, nil); err != nil {
 			logrus.WithError(err).Error("NewP11: failed to find key CKA_LABEL by CKA_ID '%s'", resultKeyId)
 			return nil, "", err
 		}
