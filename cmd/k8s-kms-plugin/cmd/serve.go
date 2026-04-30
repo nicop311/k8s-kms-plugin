@@ -14,6 +14,7 @@ package cmd
 //   - crypto11
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -22,7 +23,6 @@ import (
 	"time"
 
 	"github.com/ThalesGroup/crypto11"
-	"github.com/ThalesGroup/gose"
 	"github.com/ThalesGroup/gose/jose"
 
 	istio "github.com/ThalesGroup/k8s-kms-plugin/apis/istio/v1"
@@ -51,7 +51,7 @@ type ViperFlagsServe struct {
 	CaTLSCert     string `mapstructure:"tls-ca"`
 
 	// PKCS #11 & KMS plugin parameters
-	Algorithm  string `mapstructure:"algorithm"`
+	AlgorithmFamily string `mapstructure:"algorithm-family"`
 	CaID       string `mapstructure:"ca-id"`
 	NativePath string `mapstructure:"native-path"`
 	P11Label   string `mapstructure:"p11-label"`
@@ -67,38 +67,52 @@ type ViperFlagsServe struct {
 	HmacKeyID    string `mapstructure:"p11-hmac-id"`        // active HMAC key CKA_ID
 	HmacKeyLabel string `mapstructure:"p11-hmac-label"`     // active HMAC key CKA_LABEL
 	KekKeyID     string `mapstructure:"p11-key-id"`         // active KEK key CKA_ID
-	MlKemVariant string `mapstructure:"p11-ml-kem-variant"` // ML-KEM parameter set:  "512", "768" or "1024"
 }
 
 // Declare the viper CLI flag values buffer
 var vprFlgsServe ViperFlagsServe
 
-// Algorithm supports user input for configuration
-type Algorithm struct {
-	slug string
-}
+// AlgorithmFamily is the user-facing algorithm selector. It names the cryptographic
+// mechanism only — key size and parameter set are derived from the HSM key at runtime.
+type AlgorithmFamily string
 
-var (
-	UNKNOWNALG = Algorithm{""}
-	AESGCM     = Algorithm{"aes-gcm"}
-	AESCBC     = Algorithm{"aes-cbc"}
-	RSAOAEP    = Algorithm{"rsa-oaep"}
-	MLKEM      = Algorithm{"ml-kem"}
+const (
+	AlgorithmFamilyAESGCM  AlgorithmFamily = "aes-gcm"
+	AlgorithmFamilyAESCBC  AlgorithmFamily = "aes-cbc"
+	AlgorithmFamilyRSAOAEP AlgorithmFamily = "rsa-oaep"
+	AlgorithmFamilyMLKEM   AlgorithmFamily = "ml-kem"
 )
 
-func algFromString(s string) (jose.Alg, error) {
-	switch s {
-	case AESGCM.slug:
-		return jose.AlgA256GCM, nil
-	case AESCBC.slug:
-		return jose.AlgA256CBC, nil
-	case RSAOAEP.slug:
-		return jose.AlgRSAOAEP, nil
-	case MLKEM.slug:
-		return providers.AlgMLKEM, nil
-	default:
-		return "", gose.ErrInvalidAlgorithm
+// AlgorithmFamily implements pflag.Value so cobra validates the flag at parse time.
+func (a *AlgorithmFamily) String() string { return string(*a) }
+func (a *AlgorithmFamily) Type() string   { return "algorithmFamily" }
+func (a *AlgorithmFamily) Set(s string) error {
+	if err := validateAlgorithmFamily(s); err != nil {
+		return err
 	}
+	*a = AlgorithmFamily(s)
+	return nil
+}
+
+// validateAlgorithmFamily is used both by AlgorithmFamily.Set (CLI flag path) and
+// PersistentPreRunE (config file / env var path).
+func validateAlgorithmFamily(s string) error {
+	switch AlgorithmFamily(s) {
+	case AlgorithmFamilyAESGCM, AlgorithmFamilyAESCBC, AlgorithmFamilyRSAOAEP, AlgorithmFamilyMLKEM:
+		return nil
+	default:
+		return fmt.Errorf("must be one of aes-gcm, aes-cbc, rsa-oaep, ml-kem; got %q", s)
+	}
+}
+
+
+// sanitizeViperFlagsServe validates all user-controlled fields in ViperFlagsServe after
+// viper has resolved them from all input sources (CLI flags, config file, env vars).
+func sanitizeViperFlagsServe(f *ViperFlagsServe) error {
+	if err := validateAlgorithmFamily(f.AlgorithmFamily); err != nil {
+		return fmt.Errorf("--algorithm-family: %w", err)
+	}
+	return nil
 }
 
 // serveCmd represents the serve command
@@ -113,7 +127,7 @@ KMS v2 API: https://pkg.go.dev/k8s.io/kms@v0.34.1/apis/v2
 `,
 	Example: `
 Using flags and serving on unix socket (gRPC plaintext):
-	k8s-kms-plugin 
+	k8s-kms-plugin
 	  serve \
 		--log-level=info \
 		--socket /run/user/1000/k8s-kms-plugin.sock \
@@ -121,7 +135,7 @@ Using flags and serving on unix socket (gRPC plaintext):
 		--p11-label mylabel \
 		--p11-pin mypin \
 		--p11-key-label rsa0 \
-		--algorithm rsa-oaep
+		--algorithm-family rsa-oaep
 
 Using both environment variables and configuration file and serving on unix socket:
 	K8S_KMS_PLUGIN_SERVE_P11_PIN="mypin" k8s-kms-plugin serve --config my-kms-plugin-config.yaml
@@ -130,7 +144,7 @@ Using both CLI Flags, environment variables and configuration file and serving o
 	K8S_KMS_PLUGIN_SERVE_P11_PIN="mypin" k8s-kms-plugin --log-format=json serve --config my-kms-plugin-config.yaml
 
 Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and serving on unix socket:
-	k8s-kms-plugin 
+	k8s-kms-plugin
 	  serve \
 		--log-level=trace  \
 		--socket /run/user/1000/k8s-kms-plugin.sock \
@@ -139,13 +153,16 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 		--p11-pin mypin \
 		--p11-key-id 64636138353931326363356537313264 \
 		--p11-hmac-id 30663536623936326235663530363234 \
-		--algorithm aes-cbc
+		--algorithm-family aes-cbc
 `,
 	GroupID: "kmscmdsgrpmain",
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsServe); err != nil {
 			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			return err
+		}
+		if err := sanitizeViperFlagsServe(&vprFlgsServe); err != nil {
 			return err
 		}
 		return nil
@@ -224,13 +241,10 @@ func init() {
 
 	serveCmd.PersistentFlags().Bool("allow-any", false, "Allow any device (accepts all ids/secrets).")
 
-	serveCmd.PersistentFlags().String("algorithm", "aes-gcm", "Set the algorithm for encryption/decryption. Possible values: aes-gcm, aes-cbc, rsa-oaep, ml-kem.")
-	serveCmd.RegisterFlagCompletionFunc("algorithm", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	algFamilyDefault := AlgorithmFamilyAESGCM
+	serveCmd.PersistentFlags().Var(&algFamilyDefault, "algorithm-family", "Encryption mechanism. Possible values: aes-gcm, aes-cbc, rsa-oaep, ml-kem.")
+	serveCmd.RegisterFlagCompletionFunc("algorithm-family", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"aes-gcm", "aes-cbc", "rsa-oaep", "ml-kem"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	serveCmd.PersistentFlags().String("p11-ml-kem-variant", "768", "ML-KEM parameter set when algorithm is ml-kem. Possible values: 512, 768, 1024.")
-	serveCmd.RegisterFlagCompletionFunc("p11-ml-kem-variant", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"512", "768", "1024"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	// These flags comes from root
@@ -267,11 +281,8 @@ func init() {
 }
 
 func initProvider() (p providers.Provider, err error) {
-	// init the algorithm to use in the kms from user input
-	alg, err := algFromString(vprFlgsServe.Algorithm)
-	if err != nil {
-		return
-	}
+	// Validated by sanitizeViperFlagsServe; cast directly to the provider sentinel.
+	alg := jose.Alg(vprFlgsServe.AlgorithmFamily)
 
 	// init the provider config from user input
 	config := &crypto11.Config{}
@@ -316,7 +327,6 @@ func initProvider() (p providers.Provider, err error) {
 		vprFlgsServe.HmacKeyLabel,
 		vprFlgsServe.HmacKeyID,
 		alg,
-		vprFlgsServe.MlKemVariant,
 		false, // no key rotation
 		nil,
 		"",
