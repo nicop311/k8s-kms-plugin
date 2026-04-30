@@ -11,12 +11,14 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/ThalesGroup/crypto11"
+	"github.com/ThalesGroup/gose/jose"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/providers"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/version"
 	"github.com/sirupsen/logrus"
@@ -33,7 +35,7 @@ import (
 // Use ViperFlagsServe for the current new KEK.
 type ViperFlagsRotation struct {
 	// PKCS #11 & KMS plugin parameters
-	OldAlgorithm  string `mapstructure:"old-algorithm"`
+	OldAlgorithmFamily string `mapstructure:"old-algorithm-family"`
 	OldCaID       string `mapstructure:"old-ca-id"`
 	OldCaTLSCert  string `mapstructure:"old-tls-ca"`
 	OldNativePath string `mapstructure:"old-native-path"`
@@ -103,6 +105,9 @@ Using both CLI Flags, environment variables and configuration file and serving o
 			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
 			return err
 		}
+		if err := sanitizeViperFlagsRotation(&vprFlgsRotation); err != nil {
+			return err
+		}
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
@@ -170,7 +175,12 @@ Using both CLI Flags, environment variables and configuration file and serving o
 func init() {
 	serveCmd.AddCommand(rotationCmd)
 
-	rotationCmd.Flags().String("old-algorithm", "", "Set the algorithm for the old KEK")
+	oldAlgFamilyDefault := AlgorithmFamilyAESGCM
+	rotationCmd.Flags().Var(&oldAlgFamilyDefault, "old-algorithm-family", "Encryption mechanism of the old KEK. Possible values: aes-gcm, aes-cbc, rsa-oaep, ml-kem.")
+	rotationCmd.RegisterFlagCompletionFunc("old-algorithm-family", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"aes-gcm", "aes-cbc", "rsa-oaep", "ml-kem"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	rotationCmd.MarkFlagRequired("old-algorithm-family")
 	rotationCmd.Flags().String("old-ca-id", "", "Cert ID for old CA Cert record")
 	rotationCmd.Flags().String("old-tls-ca", "", "TLS CA cert for old KEK")
 	rotationCmd.Flags().String("old-native-path", "", "Native path for old KEK")
@@ -195,13 +205,17 @@ func init() {
 	rotationCmd.MarkFlagsMutuallyExclusive("old-p11-hmac-id", "old-p11-hmac-label")
 }
 
-func initRotatedProvider() (pRot providers.Provider, err error) {
-	// Active key
-	// init the algorithm to use in the kms from user input
-	activeAlg, err := algFromString(vprFlgsServe.Algorithm)
-	if err != nil {
-		return
+// sanitizeViperFlagsRotation validates all user-controlled fields in ViperFlagsRotation.
+func sanitizeViperFlagsRotation(f *ViperFlagsRotation) error {
+	if err := validateAlgorithmFamily(f.OldAlgorithmFamily); err != nil {
+		return fmt.Errorf("--old-algorithm-family: %w", err)
 	}
+	return nil
+}
+
+func initRotatedProvider() (pRot providers.Provider, err error) {
+	// Active key — validated by sanitizeViperFlagsServe; cast directly to provider sentinel.
+	activeAlg := jose.Alg(vprFlgsServe.AlgorithmFamily)
 
 	// init the provider activeConfig from user input
 	activeConfig := &crypto11.Config{}
@@ -237,12 +251,8 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 		activeConfig.SlotNumber = &vprFlgsServe.P11Slot
 	}
 
-	// Rotated old key
-	// init the algorithm to use in the kms from user input
-	rotatedAlg, err := algFromString(vprFlgsRotation.OldAlgorithm)
-	if err != nil {
-		return
-	}
+	// Rotated old key — validated by sanitizeViperFlagsRotation; cast directly to provider sentinel.
+	rotatedAlg := jose.Alg(vprFlgsRotation.OldAlgorithmFamily)
 
 	// init the provider oldConfig from user input
 	oldConfig := &crypto11.Config{}
