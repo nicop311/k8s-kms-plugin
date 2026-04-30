@@ -262,8 +262,12 @@ func TestPlugin_AESCBC(t *testing.T) {
 	require.NoError(t, err, "generate AES-256 CBC KEK")
 	t.Cleanup(func() { _ = kek.Delete() })
 
-	hmac, err := testCtx.GenerateSecretKeyWithLabel(
-		newKeyID(t), []byte(hmacLabel), 256, crypto11.CipherAES)
+	// HMAC key: CKK_GENERIC_SECRET with CKA_SIGN=true so CKM_SHA256_HMAC is permitted.
+	hmacAttrs, err := crypto11.NewAttributeSetWithIDAndLabel(newKeyID(t), []byte(hmacLabel))
+	require.NoError(t, err)
+	require.NoError(t, hmacAttrs.Set(crypto11.CkaSign, true))
+	require.NoError(t, hmacAttrs.Set(crypto11.CkaVerify, true))
+	hmac, err := testCtx.GenerateSecretKeyWithAttributes(hmacAttrs, 256, crypto11.CipherGeneric)
 	require.NoError(t, err, "generate HMAC key")
 	t.Cleanup(func() { _ = hmac.Delete() })
 
