@@ -30,8 +30,8 @@ import (
 const (
 	e2ePlaintext = "the quick brown fox jumps over the lazy dog — k8s-kms-plugin e2e"
 
-	// pluginStartTimeout is the maximum time to wait for the plugin unix socket
-	// to appear. PKCS#11 library loading + token connection can be slow.
+	// pluginStartTimeout is the maximum time to wait for the plugin unix socket.
+	// PKCS#11 library loading + token connection can be slow.
 	pluginStartTimeout = 20 * time.Second
 
 	// pluginTestTimeout is the context deadline for the entire plugin subprocess.
@@ -40,7 +40,6 @@ const (
 
 // ── Unique-name helpers ───────────────────────────────────────────────────────
 
-// newKeyID returns a UUID as bytes, suitable for PKCS#11 CKA_ID.
 func newKeyID(t *testing.T) []byte {
 	t.Helper()
 	id, err := uuid.NewRandom()
@@ -50,7 +49,7 @@ func newKeyID(t *testing.T) []byte {
 	return b
 }
 
-// newLabel returns a short unique label (max ~16 chars) safe for PKCS#11.
+// newLabel returns a short unique label safe for PKCS#11 CKA_LABEL.
 func newLabel(t *testing.T) string {
 	t.Helper()
 	id, err := uuid.NewRandom()
@@ -59,7 +58,6 @@ func newLabel(t *testing.T) string {
 }
 
 // socketPath returns a unique, short unix socket path under /tmp.
-// Keeps total path length well under the 108-byte Linux limit.
 func socketPath(t *testing.T) string {
 	t.Helper()
 	id, err := uuid.NewRandom()
@@ -72,12 +70,10 @@ func socketPath(t *testing.T) string {
 type pluginProcess struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
-	logPath string
 }
 
-// startPlugin launches k8s-kms-plugin serve with the given extra flags.
-// The subprocess stdout+stderr go to a log file; on test failure the log is
-// printed via t.Log so the failure reason is visible in `go test -v` output.
+// startPlugin launches k8s-kms-plugin serve. Stdout+stderr go to a log file
+// that is printed via t.Log after every test (visible with -v, diagnosable on failure).
 func startPlugin(t *testing.T, socket string, extraArgs ...string) *pluginProcess {
 	t.Helper()
 
@@ -87,7 +83,6 @@ func startPlugin(t *testing.T, socket string, extraArgs ...string) *pluginProces
 
 	t.Cleanup(func() {
 		logFile.Close()
-		// Always print the plugin log so failures are self-explanatory.
 		if data, rerr := os.ReadFile(logPath); rerr == nil && len(data) > 0 {
 			t.Logf("=== plugin log (%s) ===\n%s", logPath, string(data))
 		}
@@ -114,7 +109,7 @@ func startPlugin(t *testing.T, socket string, extraArgs ...string) *pluginProces
 	cmd.Stderr = logFile
 	require.NoError(t, cmd.Start(), "start k8s-kms-plugin")
 
-	return &pluginProcess{cmd: cmd, cancel: cancel, logPath: logPath}
+	return &pluginProcess{cmd: cmd, cancel: cancel}
 }
 
 func (p *pluginProcess) stop() {
@@ -122,8 +117,7 @@ func (p *pluginProcess) stop() {
 	_ = p.cmd.Wait()
 }
 
-// waitForSocket polls every 200 ms until the unix socket file appears,
-// calling t.Fatalf if pluginStartTimeout elapses.
+// waitForSocket polls every 200 ms until the unix socket file appears.
 func waitForSocket(t *testing.T, socket string) {
 	t.Helper()
 	t.Logf("waiting for socket %s (timeout %s)", socket, pluginStartTimeout)
@@ -138,7 +132,7 @@ func waitForSocket(t *testing.T, socket string) {
 	t.Fatalf("timeout (%s) waiting for plugin socket %s", pluginStartTimeout, socket)
 }
 
-// ── gRPC roundtrip via grpcurl ────────────────────────────────────────────────
+// ── gRPC helpers ──────────────────────────────────────────────────────────────
 
 type statusResponse struct {
 	KeyId string `json:"keyId"`
@@ -151,14 +145,10 @@ type decryptResponse struct {
 	Plaintext string `json:"plaintext"` // base64-encoded bytes field
 }
 
-// callGrpcurl runs a single grpcurl call and returns the combined output.
-// On a non-zero exit the full output is included in the test error.
+// callGrpcurl invokes grpcurl and returns the combined stdout+stderr output.
+// Mirrors the format used in scripts/grpcurl/grpcurl-roundtrip-test.sh.
 func callGrpcurl(t *testing.T, socket, method, body string) []byte {
 	t.Helper()
-	// grpcurl with -unix flag: the address must be the bare socket path.
-	// unix:// prefix is NOT added when -unix is present.
-	// grpcurl requires -import-path when -proto receives an absolute path.
-	// Address format matches scripts/grpcurl/grpcurl-roundtrip-test.sh: -unix unix://<socket>.
 	cmd := exec.Command(
 		"grpcurl",
 		"-plaintext",
@@ -170,96 +160,121 @@ func callGrpcurl(t *testing.T, socket, method, body string) []byte {
 		"v2.KeyManagementService."+method,
 	)
 	out, err := cmd.CombinedOutput()
-	require.NoErrorf(t, err, "grpcurl %s failed\ncmd: %s\noutput:\n%s", method, cmd.String(), string(out))
-	t.Logf("grpcurl %s response: %s", method, string(out))
+	require.NoErrorf(t, err, "grpcurl %s failed\ncmd: %s\noutput:\n%s",
+		method, cmd.String(), string(out))
+	t.Logf("grpcurl %s: %s", method, string(out))
 	return out
 }
 
-// grpcRoundtrip performs Status → Encrypt → Decrypt and asserts the recovered
-// plaintext equals the original.
-func grpcRoundtrip(t *testing.T, socket string) {
+// ── KMS v2 request sub-tests ──────────────────────────────────────────────────
+//
+// kmsRoundtrip runs Status, Encrypt and Decrypt as named sub-tests against a
+// running plugin socket. Each request is an independent t.Run so failures are
+// reported individually. Encrypt and Decrypt are skipped when an earlier step
+// fails (t.Failed guard) since they depend on the prior response values.
+
+func kmsRoundtrip(t *testing.T, socket string) {
 	t.Helper()
 
-	// Status — retrieve the active key ID.
-	var status statusResponse
-	require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Status", `{}`), &status))
-	require.NotEmpty(t, status.KeyId, "Status.keyId must not be empty")
-	t.Logf("Status.keyId = %s", status.KeyId)
-
-	// Encrypt — plaintext must be base64-encoded for the bytes proto field.
 	plaintextB64 := base64.StdEncoding.EncodeToString([]byte(e2ePlaintext))
-	encBody := fmt.Sprintf(`{"plaintext":%q,"uid":"e2e-enc"}`, plaintextB64)
-	var enc encryptResponse
-	require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Encrypt", encBody), &enc))
-	require.NotEmpty(t, enc.Ciphertext, "Encrypt.ciphertext must not be empty")
 
-	// Decrypt — verify roundtrip.
-	decBody := fmt.Sprintf(`{"ciphertext":%q,"uid":"e2e-dec","key_id":%q}`, enc.Ciphertext, enc.KeyId)
-	var dec decryptResponse
-	require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Decrypt", decBody), &dec))
+	// Shared state passed between sequential sub-tests.
+	var keyId, ciphertext string
 
-	recovered, err := base64.StdEncoding.DecodeString(dec.Plaintext)
-	require.NoError(t, err, "base64-decode Decrypt.plaintext")
-	assert.Equal(t, e2ePlaintext, string(recovered))
+	t.Run("Status", func(t *testing.T) {
+		var resp statusResponse
+		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Status", `{}`), &resp))
+		require.NotEmpty(t, resp.KeyId, "Status.keyId must not be empty")
+		keyId = resp.KeyId
+	})
+	if t.Failed() {
+		return // Encrypt / Decrypt would fail without a valid keyId
+	}
+
+	t.Run("Encrypt", func(t *testing.T) {
+		body := fmt.Sprintf(`{"plaintext":%q,"uid":"e2e-enc"}`, plaintextB64)
+		var resp encryptResponse
+		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Encrypt", body), &resp))
+		require.NotEmpty(t, resp.Ciphertext, "Encrypt.ciphertext must not be empty")
+		ciphertext = resp.Ciphertext
+		keyId = resp.KeyId // prefer the keyId from EncryptResponse
+	})
+	if t.Failed() {
+		return // Decrypt would fail without a valid ciphertext
+	}
+
+	t.Run("Decrypt", func(t *testing.T) {
+		body := fmt.Sprintf(`{"ciphertext":%q,"uid":"e2e-dec","key_id":%q}`, ciphertext, keyId)
+		var resp decryptResponse
+		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Decrypt", body), &resp))
+		recovered, err := base64.StdEncoding.DecodeString(resp.Plaintext)
+		require.NoError(t, err, "base64-decode Decrypt.plaintext")
+		assert.Equal(t, e2ePlaintext, string(recovered))
+	})
+}
+
+// ── Per-algorithm test setup ──────────────────────────────────────────────────
+
+// runPluginTest is the shared harness: it starts the plugin with the given
+// flags, waits for the socket, then delegates to kmsRoundtrip.
+func runPluginTest(t *testing.T, extraArgs ...string) {
+	t.Helper()
+
+	sock := socketPath(t)
+	t.Cleanup(func() { os.Remove(sock) })
+
+	proc := startPlugin(t, sock, extraArgs...)
+	defer proc.stop()
+
+	waitForSocket(t, sock)
+	kmsRoundtrip(t, sock)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// testAESGCM generates an AES key of the requested bit size, starts the plugin,
-// and exercises a full Status → Encrypt → Decrypt roundtrip.
-// The key size is auto-detected by the plugin via CKA_VALUE_LEN — the user
-// only needs to specify --algorithm-family aes-gcm.
-func testAESGCM(t *testing.T, bitSize int) {
-	t.Helper()
+// TestPlugin_AESGCM tests all three AES-GCM key sizes (128 / 192 / 256 bit).
+// The key size is auto-detected by the plugin from CKA_VALUE_LEN; the user
+// only specifies --algorithm-family aes-gcm.
+func TestPlugin_AESGCM(t *testing.T) {
+	for _, bitSize := range []int{128, 192, 256} {
+		t.Run(fmt.Sprintf("%dbit", bitSize), func(t *testing.T) {
+			label := newLabel(t)
+			key, err := testCtx.GenerateSecretKeyWithLabel(
+				newKeyID(t), []byte(label), bitSize, crypto11.CipherAES)
+			require.NoErrorf(t, err, "GenerateSecretKeyWithLabel AES-%d", bitSize)
+			t.Cleanup(func() { _ = key.Delete() })
 
-	label := newLabel(t)
-	key, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(label), bitSize, crypto11.CipherAES)
-	require.NoErrorf(t, err, "GenerateSecretKeyWithLabel AES-%d", bitSize)
-	t.Cleanup(func() { _ = key.Delete() })
-
-	sock := socketPath(t)
-	t.Cleanup(func() { os.Remove(sock) })
-
-	proc := startPlugin(t, sock,
-		"--algorithm-family", string(providers.AlgAESGCM),
-		"--p11-key-label", label,
-	)
-	defer proc.stop()
-
-	waitForSocket(t, sock)
-	grpcRoundtrip(t, sock)
+			runPluginTest(t,
+				"--algorithm-family", string(providers.AlgAESGCM),
+				"--p11-key-label", label,
+			)
+		})
+	}
 }
 
-func TestPlugin_AESGCM_128bit(t *testing.T) { testAESGCM(t, 128) }
-func TestPlugin_AESGCM_192bit(t *testing.T) { testAESGCM(t, 192) }
-func TestPlugin_AESGCM_256bit(t *testing.T) { testAESGCM(t, 256) }
-
+// TestPlugin_AESCBC tests AES-256-CBC + HMAC-SHA256.
 func TestPlugin_AESCBC(t *testing.T) {
 	kekLabel := newLabel(t)
 	hmacLabel := newLabel(t)
 
-	kek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(kekLabel), 256, crypto11.CipherAES)
+	kek, err := testCtx.GenerateSecretKeyWithLabel(
+		newKeyID(t), []byte(kekLabel), 256, crypto11.CipherAES)
 	require.NoError(t, err, "generate AES-256 CBC KEK")
 	t.Cleanup(func() { _ = kek.Delete() })
 
-	hmac, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(hmacLabel), 256, crypto11.CipherAES)
+	hmac, err := testCtx.GenerateSecretKeyWithLabel(
+		newKeyID(t), []byte(hmacLabel), 256, crypto11.CipherAES)
 	require.NoError(t, err, "generate HMAC key")
 	t.Cleanup(func() { _ = hmac.Delete() })
 
-	sock := socketPath(t)
-	t.Cleanup(func() { os.Remove(sock) })
-
-	proc := startPlugin(t, sock,
+	runPluginTest(t,
 		"--algorithm-family", string(providers.AlgAESCBC),
 		"--p11-key-label",  kekLabel,
 		"--p11-hmac-label", hmacLabel,
 	)
-	defer proc.stop()
-
-	waitForSocket(t, sock)
-	grpcRoundtrip(t, sock)
 }
 
+// TestPlugin_RSAOAEP tests RSA-2048 OAEP.
 func TestPlugin_RSAOAEP(t *testing.T) {
 	label := newLabel(t)
 
@@ -267,21 +282,15 @@ func TestPlugin_RSAOAEP(t *testing.T) {
 	require.NoError(t, err, "GenerateRSAKeyPairWithLabel 2048")
 	t.Cleanup(func() { _ = kp.Delete() })
 
-	sock := socketPath(t)
-	t.Cleanup(func() { os.Remove(sock) })
-
-	proc := startPlugin(t, sock,
+	runPluginTest(t,
 		"--algorithm-family", string(providers.AlgRSAOAEP),
 		"--p11-key-label", label,
 	)
-	defer proc.stop()
-
-	waitForSocket(t, sock)
-	grpcRoundtrip(t, sock)
 }
 
-// TestPlugin_MLKEM requires SoftHSMv3 (pqctoday-org/pqctoday-hsm).
-// Automatically skipped on tokens that do not support CKM_ML_KEM_KEY_PAIR_GEN.
+// TestPlugin_MLKEM tests ML-KEM-768. Skipped automatically on tokens that do
+// not support CKM_ML_KEM_KEY_PAIR_GEN (SoftHSMv2 and earlier).
+// Requires SoftHSMv3: https://github.com/pqctoday-org/pqctoday-hsm
 func TestPlugin_MLKEM(t *testing.T) {
 	label := newLabel(t)
 
@@ -292,15 +301,8 @@ func TestPlugin_MLKEM(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = kp.Delete() })
 
-	sock := socketPath(t)
-	t.Cleanup(func() { os.Remove(sock) })
-
-	proc := startPlugin(t, sock,
+	runPluginTest(t,
 		"--algorithm-family", string(providers.AlgMLKEM),
 		"--p11-key-label", label,
 	)
-	defer proc.stop()
-
-	waitForSocket(t, sock)
-	grpcRoundtrip(t, sock)
 }
