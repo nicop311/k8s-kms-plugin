@@ -1,0 +1,340 @@
+/*
+ * Copyright 2026 Thales Group
+ * SPDX-License-Identifier: MIT
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
+// Package integration contains HSM-backed integration tests.
+//
+// Required environment variables (inherited from p11_integration_test.go init()):
+//
+//	P11_LIBRARY  — path to the PKCS#11 shared library
+//	P11_TOKEN    — token label
+//	P11_PIN      — token PIN
+//
+// AES-GCM, AES-CBC and RSA-OAEP tests run against SoftHSMv2 or any PKCS#11 token.
+// ML-KEM tests require SoftHSMv3 from https://github.com/pqctoday-org/pqctoday-hsm
+// which implements PKCS#11 v3.2 (CKM_ML_KEM_KEY_PAIR_GEN / CKM_ML_KEM).
+package integration
+
+import (
+	"context"
+	"os"
+	"testing"
+
+	"github.com/ThalesGroup/crypto11"
+	"github.com/ThalesGroup/gose/jose"
+	"github.com/ThalesGroup/k8s-kms-plugin/pkg/providers"
+	"github.com/google/uuid"
+	"github.com/miekg/pkcs11"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	k8skmsv2 "k8s.io/kms/apis/v2"
+)
+
+const testPlaintext = "the quick brown fox jumps over the lazy dog"
+
+// skipIfNoLibrary skips the test when P11_LIBRARY is not set, which means the
+// init() in p11_integration_test.go already panicked. Guard every test with this
+// so the suite can run as a no-op in environments without an HSM.
+func skipIfNoLibrary(t *testing.T) {
+	t.Helper()
+	if os.Getenv("P11_LIBRARY") == "" {
+		t.Skip("P11_LIBRARY not set — skipping integration test")
+	}
+}
+
+// newTestID returns a unique, text-encoded UUID suitable for use as a PKCS#11 CKA_ID.
+func newTestID(t *testing.T) []byte {
+	t.Helper()
+	id, err := uuid.NewRandom()
+	require.NoError(t, err)
+	b, err := id.MarshalText()
+	require.NoError(t, err)
+	return b
+}
+
+// newTestLabel returns a unique label string derived from the test name.
+func newTestLabel(t *testing.T) string {
+	t.Helper()
+	id, err := uuid.NewRandom()
+	require.NoError(t, err)
+	return t.Name() + "-" + id.String()[:8]
+}
+
+// jweEncHeader unmarshals a compact JWE and returns its enc header value.
+func jweEncHeader(t *testing.T, ciphertext []byte) jose.Enc {
+	t.Helper()
+	var jwe jose.JweRfc7516Compact
+	require.NoError(t, jwe.Unmarshal(string(ciphertext)))
+	return jwe.ProtectedHeader.Enc
+}
+
+// jweAlgHeader unmarshals a compact JWE and returns its alg header value.
+func jweAlgHeader(t *testing.T, ciphertext []byte) jose.Alg {
+	t.Helper()
+	var jwe jose.JweRfc7516Compact
+	require.NoError(t, jwe.Unmarshal(string(ciphertext)))
+	return jwe.ProtectedHeader.Alg
+}
+
+// newP11WithLabel creates a P11 provider identified by CKA_LABEL (no CKA_ID supplied).
+func newP11WithLabel(t *testing.T, label string, alg jose.Alg) *providers.P11 {
+	t.Helper()
+	p, err := providers.NewP11(
+		testConfig,
+		false, // createKey
+		"",    // kekkeyid (CKA_ID) — discover from label
+		label, // k8sKekLabel (CKA_LABEL)
+		"",    // hmacKeyLabel
+		"",    // hmacCkaId
+		alg,
+		false, // isKeyRotation
+		nil, "", "", "", "", "",
+	)
+	require.NoError(t, err)
+	return p
+}
+
+// newP11CBCWithLabel creates a P11 provider for AES-CBC + HMAC.
+func newP11CBCWithLabel(t *testing.T, kekLabel, hmacLabel string) *providers.P11 {
+	t.Helper()
+	p, err := providers.NewP11(
+		testConfig,
+		false,
+		"",        // kekkeyid
+		kekLabel,  // k8sKekLabel
+		hmacLabel, // hmacKeyLabel
+		"",        // hmacCkaId
+		providers.AlgAESCBC,
+		false,
+		nil, "", "", "", "", "",
+	)
+	require.NoError(t, err)
+	return p
+}
+
+// encryptDecryptRoundtrip is a shared helper that encrypts and then decrypts,
+// asserting the recovered plaintext equals the original.
+func encryptDecryptRoundtrip(t *testing.T, p *providers.P11, plaintext []byte) *k8skmsv2.EncryptResponse {
+	t.Helper()
+	encResp, err := p.Encrypt(context.Background(), &k8skmsv2.EncryptRequest{
+		Plaintext: plaintext,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, encResp)
+
+	decResp, err := p.Decrypt(context.Background(), &k8skmsv2.DecryptRequest{
+		Ciphertext: encResp.GetCiphertext(),
+		KeyId:      encResp.GetKeyId(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, decResp.GetPlaintext())
+	return encResp
+}
+
+// ---------------------------------------------------------------------------
+// AES-GCM — auto-detected key size
+// ---------------------------------------------------------------------------
+
+func testAESGCM(t *testing.T, bitSize int, wantEnc jose.Enc) {
+	t.Helper()
+	skipIfNoLibrary(t)
+
+	id := newTestID(t)
+	label := newTestLabel(t)
+
+	key, err := testCtx.GenerateSecretKeyWithLabel(id, []byte(label), bitSize, crypto11.CipherAES)
+	require.NoErrorf(t, err, "GenerateSecretKeyWithLabel(%d-bit)", bitSize)
+	t.Cleanup(func() { _ = key.Delete() })
+
+	p := newP11WithLabel(t, label, providers.AlgAESGCM)
+
+	encResp := encryptDecryptRoundtrip(t, p, []byte(testPlaintext))
+
+	// Verify the JWE enc header matches the actual key size, not a hardcoded constant.
+	assert.Equal(t, wantEnc, jweEncHeader(t, encResp.GetCiphertext()),
+		"JWE enc header should reflect the %d-bit HSM key", bitSize)
+}
+
+func TestAESGCM_AutoDetect_128bit(t *testing.T) {
+	testAESGCM(t, 128, jose.EncA128GCM)
+}
+
+func TestAESGCM_AutoDetect_192bit(t *testing.T) {
+	testAESGCM(t, 192, jose.EncA192GCM)
+}
+
+func TestAESGCM_AutoDetect_256bit(t *testing.T) {
+	testAESGCM(t, 256, jose.EncA256GCM)
+}
+
+// ---------------------------------------------------------------------------
+// AES-CBC + HMAC-SHA256
+// ---------------------------------------------------------------------------
+
+func TestAESCBC_EncryptDecrypt(t *testing.T) {
+	skipIfNoLibrary(t)
+
+	kekID := newTestID(t)
+	kekLabel := newTestLabel(t)
+	hmacID := newTestID(t)
+	hmacLabel := newTestLabel(t)
+
+	kek, err := testCtx.GenerateSecretKeyWithLabel(kekID, []byte(kekLabel), 256, crypto11.CipherAES)
+	require.NoError(t, err, "generate AES-256 KEK")
+	t.Cleanup(func() { _ = kek.Delete() })
+
+	// HMAC key — generate as a generic secret key; CKM_SHA256_HMAC works on any AES key
+	hmacKey, err := testCtx.GenerateSecretKeyWithLabel(hmacID, []byte(hmacLabel), 256, crypto11.CipherAES)
+	require.NoError(t, err, "generate HMAC key")
+	t.Cleanup(func() { _ = hmacKey.Delete() })
+
+	p := newP11CBCWithLabel(t, kekLabel, hmacLabel)
+	encryptDecryptRoundtrip(t, p, []byte(testPlaintext))
+}
+
+// ---------------------------------------------------------------------------
+// RSA-OAEP
+// ---------------------------------------------------------------------------
+
+func TestRSAOAEP_EncryptDecrypt(t *testing.T) {
+	skipIfNoLibrary(t)
+
+	id := newTestID(t)
+	label := newTestLabel(t)
+
+	kp, err := testCtx.GenerateRSAKeyPairWithLabel(id, []byte(label), 2048)
+	require.NoError(t, err, "GenerateRSAKeyPairWithLabel 2048-bit")
+	t.Cleanup(func() { _ = kp.Delete() })
+
+	p := newP11WithLabel(t, label, providers.AlgRSAOAEP)
+	encryptDecryptRoundtrip(t, p, []byte(testPlaintext))
+}
+
+// ---------------------------------------------------------------------------
+// ML-KEM — requires SoftHSMv3 (pqctoday-org/pqctoday-hsm)
+// ---------------------------------------------------------------------------
+
+// testMLKEM exercises the full NewP11 → Encrypt → Decrypt cycle for one ML-KEM
+// parameter set and verifies that the produced JWE carries the expected algorithm.
+func testMLKEM(t *testing.T, paramSet crypto11.MLKEMParameterSet, wantAlg jose.Alg) {
+	t.Helper()
+	skipIfNoLibrary(t)
+
+	id := newTestID(t)
+	label := newTestLabel(t)
+
+	kp, err := testCtx.GenerateMLKEMKeyPairWithLabel(id, []byte(label), paramSet)
+	if err != nil {
+		// SoftHSMv2 does not support ML-KEM; require SoftHSMv3.
+		if pkcs11.Error(pkcs11.CKR_MECHANISM_INVALID) == pkcs11.Error(0) || err != nil {
+			t.Skipf("HSM does not support ML-KEM (param set %d): %v — requires SoftHSMv3 from pqctoday-org/pqctoday-hsm", paramSet, err)
+		}
+	}
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = kp.Delete() })
+
+	p := newP11WithLabel(t, label, providers.AlgMLKEM)
+	encResp := encryptDecryptRoundtrip(t, p, []byte(testPlaintext))
+
+	// The JWE alg header must match the specific ML-KEM parameter set
+	// (set by gose from the key's ParameterSet(), not from the --algorithm-family flag).
+	assert.Equal(t, wantAlg, jweAlgHeader(t, encResp.GetCiphertext()),
+		"JWE alg header should match ML-KEM parameter set %d", paramSet)
+}
+
+func TestMLKEM_512_EncryptDecrypt(t *testing.T) {
+	testMLKEM(t, crypto11.MLKEM512, jose.AlgMLKEM512KMAC128)
+}
+
+func TestMLKEM_768_EncryptDecrypt(t *testing.T) {
+	testMLKEM(t, crypto11.MLKEM768, jose.AlgMLKEM768KMAC256)
+}
+
+func TestMLKEM_1024_EncryptDecrypt(t *testing.T) {
+	testMLKEM(t, crypto11.MLKEM1024, jose.AlgMLKEM1024KMAC256)
+}
+
+// ---------------------------------------------------------------------------
+// Key rotation — AES-GCM active key decrypts ciphertext from an old AES-GCM key
+// ---------------------------------------------------------------------------
+
+func TestAESGCM_KeyRotation(t *testing.T) {
+	skipIfNoLibrary(t)
+
+	// Provision old KEK (128-bit) and new KEK (256-bit) on the HSM.
+	oldID := newTestID(t)
+	oldLabel := newTestLabel(t)
+	newID := newTestID(t)
+	newLabel := newTestLabel(t)
+
+	oldKey, err := testCtx.GenerateSecretKeyWithLabel(oldID, []byte(oldLabel), 128, crypto11.CipherAES)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = oldKey.Delete() })
+
+	newKey, err := testCtx.GenerateSecretKeyWithLabel(newID, []byte(newLabel), 256, crypto11.CipherAES)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = newKey.Delete() })
+
+	// Encrypt with the old key using a standalone provider.
+	oldP, err := providers.NewP11(
+		testConfig, false,
+		"", oldLabel, "", "",
+		providers.AlgAESGCM,
+		false, nil, "", "", "", "", "",
+	)
+	require.NoError(t, err)
+
+	encResp, err := oldP.Encrypt(context.Background(), &k8skmsv2.EncryptRequest{
+		Plaintext: []byte(testPlaintext),
+	})
+	require.NoError(t, err)
+
+	// Decrypt using a rotation provider: new key is active, old key is for decryption only.
+	rotP, err := providers.NewP11(
+		testConfig, false,
+		"", newLabel, "", "",
+		providers.AlgAESGCM,
+		true,          // isKeyRotation
+		testConfig,    // oldConfig (same token)
+		"", oldLabel,  // old KEK by label
+		"", "",        // no old HMAC
+		providers.AlgAESGCM,
+	)
+	require.NoError(t, err)
+
+	decResp, err := rotP.Decrypt(context.Background(), &k8skmsv2.DecryptRequest{
+		Ciphertext: encResp.GetCiphertext(),
+		KeyId:      encResp.GetKeyId(),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []byte(testPlaintext), decResp.GetPlaintext())
+}
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+func TestStatus_ReturnsKeyId(t *testing.T) {
+	skipIfNoLibrary(t)
+
+	id := newTestID(t)
+	label := newTestLabel(t)
+
+	key, err := testCtx.GenerateSecretKeyWithLabel(id, []byte(label), 256, crypto11.CipherAES)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = key.Delete() })
+
+	p := newP11WithLabel(t, label, providers.AlgAESGCM)
+
+	resp, err := p.Status(context.Background(), &k8skmsv2.StatusRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "v2", resp.Version)
+	assert.Equal(t, "ok", resp.Healthz)
+	assert.NotEmpty(t, resp.KeyId, "KeyId should be the hex CKA_ID of the KEK")
+}

@@ -258,18 +258,8 @@ func TestP11_Encrypt(t *testing.T) {
 	}
 }
 
-func init() {
-	testConfig = &crypto11.Config{
-		Path:       os.Getenv("P11_LIBRARY"),
-		TokenLabel: os.Getenv("P11_TOKEN"),
-		Pin:        os.Getenv("P11_PIN"),
-	}
-	var err error
-	if testCtx, err = crypto11.Configure(testConfig); err != nil {
-		panic(err)
-	}
-
-}
+// testConfig and testCtx are initialised by TestMain in main_test.go
+// after the ephemeral SoftHSMv3 token has been set up.
 
 func setupTpm2Pkcs11TestCase(t testing.TB) {
 	var err error
