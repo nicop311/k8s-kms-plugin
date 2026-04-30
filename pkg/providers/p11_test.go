@@ -13,12 +13,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/ThalesGroup/crypto11"
 	"github.com/ThalesGroup/gose/jose"
+	"github.com/miekg/pkcs11"
 	"github.com/stretchr/testify/assert"
 
 	k8skmsv2 "k8s.io/kms/apis/v2"
@@ -246,6 +249,86 @@ func TestP11_NewP11_AllEmptyArgs(t *testing.T) {
 
 	_, err := NewP11(emptyActiveCfg, false, "", "", "", "", "", false, emptyOldCfg, "", "", "", "", "")
 	assert.Error(t, err)
+}
+
+// TestAlgSentinelValues verifies that all routing sentinels carry the expected
+// slug strings. Changing these values would break backwards-compatible config files.
+func TestAlgSentinelValues(t *testing.T) {
+	assert.Equal(t, jose.Alg("aes-gcm"), AlgAESGCM)
+	assert.Equal(t, jose.Alg("aes-cbc"), AlgAESCBC)
+	assert.Equal(t, jose.Alg("rsa-oaep"), AlgRSAOAEP)
+	assert.Equal(t, jose.Alg("ml-kem"), AlgMLKEM)
+}
+
+// TestAlgToKeyGenParams_KnownAlgorithms verifies that every supported AES-GCM
+// size is registered with the correct bit-width and cipher.
+func TestAlgToKeyGenParams_KnownAlgorithms(t *testing.T) {
+	cases := []struct {
+		alg      jose.Alg
+		wantSize int
+	}{
+		{jose.AlgA128GCM, 128},
+		{jose.AlgA192GCM, 192},
+		{jose.AlgA256GCM, 256},
+	}
+	for _, tc := range cases {
+		params, ok := algToKeyGenParams[tc.alg]
+		assert.Truef(t, ok, "expected %s in algToKeyGenParams", tc.alg)
+		assert.Equal(t, tc.wantSize, params.size)
+		assert.Equal(t, crypto11.CipherAES, params.cipher)
+	}
+}
+
+// TestIsPKCS11AuthenticationError covers nil, non-pkcs11, and CKR_PIN_INCORRECT inputs.
+func TestIsPKCS11AuthenticationError(t *testing.T) {
+	assert.False(t, IsPKCS11AuthenticationError(nil))
+	assert.False(t, IsPKCS11AuthenticationError(errors.New("plain error")))
+
+	// Wrap a pkcs11.Error so errors.Unwrap returns it.
+	pinErr := fmt.Errorf("login: %w", pkcs11.Error(pkcs11.CKR_PIN_INCORRECT))
+	assert.True(t, IsPKCS11AuthenticationError(pinErr))
+
+	otherErr := fmt.Errorf("login: %w", pkcs11.Error(pkcs11.CKR_GENERAL_ERROR))
+	assert.False(t, IsPKCS11AuthenticationError(otherErr))
+}
+
+// mockMLKEMKeyPair is a minimal crypto11.MLKEMKeyPair for unit-testing mlkemAlgFromKey.
+// Only ParameterSet() matters; the other methods are no-ops.
+type mockMLKEMKeyPair struct {
+	paramSet crypto11.MLKEMParameterSet
+}
+
+func (m *mockMLKEMKeyPair) ParameterSet() crypto11.MLKEMParameterSet { return m.paramSet }
+func (m *mockMLKEMKeyPair) Encapsulate(_ crypto11.AttributeSet) ([]byte, *crypto11.MLKEMSharedSecret, error) {
+	return nil, nil, nil
+}
+func (m *mockMLKEMKeyPair) Decapsulate(_ []byte, _ crypto11.AttributeSet) (*crypto11.MLKEMSharedSecret, error) {
+	return nil, nil
+}
+func (m *mockMLKEMKeyPair) Delete() error { return nil }
+
+func TestMlkemAlgFromKey(t *testing.T) {
+	cases := []struct {
+		paramSet crypto11.MLKEMParameterSet
+		wantAlg  jose.Alg
+	}{
+		{crypto11.MLKEM512, jose.AlgMLKEM512KMAC128},
+		{crypto11.MLKEM768, jose.AlgMLKEM768KMAC256},
+		{crypto11.MLKEM1024, jose.AlgMLKEM1024KMAC256},
+	}
+	for _, tc := range cases {
+		kp := &mockMLKEMKeyPair{paramSet: tc.paramSet}
+		got, err := mlkemAlgFromKey(kp)
+		assert.NoError(t, err)
+		assert.Equal(t, tc.wantAlg, got)
+	}
+}
+
+func TestMlkemAlgFromKey_UnknownParameterSet(t *testing.T) {
+	kp := &mockMLKEMKeyPair{paramSet: 9999}
+	_, err := mlkemAlgFromKey(kp)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported ML-KEM parameter set")
 }
 
 func TestP11_NewP11_ConfigEmptyArgs(t *testing.T) {
