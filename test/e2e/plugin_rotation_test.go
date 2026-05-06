@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/ThalesGroup/crypto11"
+	"github.com/ThalesGroup/gose/jose"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/providers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,9 +52,9 @@ func captureEncryptResponse(t *testing.T, extraArgs ...string) (ciphertext, keyI
 // kmsRotationRoundtrip exercises a running rotation plugin on socket.
 // It runs four sequential sub-tests:
 //  1. Status — must return a keyId different from oldKeyId (the rotated key).
-//  2. EncryptWithNewKey — Encrypt must succeed and return the new keyId.
-//  3. DecryptWithNewKey — round-trip decryption of the just-encrypted ciphertext.
-//  4. DecryptOldCiphertext — oldCiphertext (encrypted with oldKeyId before rotation)
+//  2. EncryptWithNewKeyDuringRotation — Encrypt must succeed and return the new keyId.
+//  3. DecryptWithNewKeyDuringRotation — round-trip decryption of the just-encrypted ciphertext.
+//  4. DecryptWithOldKeyDuringRotation — oldCiphertext (encrypted with oldKeyId before rotation)
 //     must still decrypt to rotationPlaintext.
 func kmsRotationRoundtrip(t *testing.T, socket, oldCiphertext, oldKeyId string) {
 	t.Helper()
@@ -73,7 +74,7 @@ func kmsRotationRoundtrip(t *testing.T, socket, oldCiphertext, oldKeyId string) 
 		return
 	}
 
-	t.Run("EncryptWithNewKey", func(t *testing.T) {
+	t.Run("EncryptWithNewKeyDuringRotation", func(t *testing.T) {
 		body := fmt.Sprintf(`{"plaintext":%q,"uid":"rot-enc-new"}`, plaintextB64)
 		var resp encryptResponse
 		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Encrypt", body), &resp))
@@ -85,7 +86,7 @@ func kmsRotationRoundtrip(t *testing.T, socket, oldCiphertext, oldKeyId string) 
 		return
 	}
 
-	t.Run("DecryptWithNewKey", func(t *testing.T) {
+	t.Run("DecryptWithNewKeyDuringRotation", func(t *testing.T) {
 		body := fmt.Sprintf(`{"ciphertext":%q,"uid":"rot-dec-new","key_id":%q}`, activeCiphertext, newKeyId)
 		var resp decryptResponse
 		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Decrypt", body), &resp))
@@ -94,7 +95,7 @@ func kmsRotationRoundtrip(t *testing.T, socket, oldCiphertext, oldKeyId string) 
 		assert.Equal(t, rotationPlaintext, string(recovered))
 	})
 
-	t.Run("DecryptOldCiphertext", func(t *testing.T) {
+	t.Run("DecryptWithOldKeyDuringRotation", func(t *testing.T) {
 		body := fmt.Sprintf(`{"ciphertext":%q,"uid":"rot-dec-old","key_id":%q}`, oldCiphertext, oldKeyId)
 		var resp decryptResponse
 		require.NoError(t, json.Unmarshal(callGrpcurl(t, socket, "Decrypt", body), &resp))
@@ -109,9 +110,9 @@ func kmsRotationRoundtrip(t *testing.T, socket, oldCiphertext, oldKeyId string) 
 // same token, so these values mirror testConfig.
 func oldTokenArgs() []string {
 	return []string{
-		"--old-p11-lib",   testConfig.Path,
+		"--old-p11-lib", testConfig.Path,
 		"--old-p11-label", testConfig.TokenLabel,
-		"--old-p11-pin",   testConfig.Pin,
+		"--old-p11-pin", testConfig.Pin,
 	}
 }
 
@@ -124,10 +125,17 @@ func oldTokenArgs() []string {
 func runRotationTest(t *testing.T, oldServeArgs, newServeArgs, oldRotationArgs []string) {
 	t.Helper()
 
-	// Phase 1: standalone plugin with the old key — capture a ciphertext to rotate.
-	oldCiphertext, oldKeyId := captureEncryptResponse(t, oldServeArgs...)
+	// Phase 1: standalone "serve" with the old key — named sub-test so the step
+	// is visible in the test report alongside the rotation sub-tests.
+	var oldCiphertext, oldKeyId string
+	t.Run("EncryptWithOldKeyBeforeRotation", func(t *testing.T) {
+		oldCiphertext, oldKeyId = captureEncryptResponse(t, oldServeArgs...)
+	})
+	if t.Failed() {
+		return
+	}
 
-	// Phase 2: rotation plugin.
+	// Phase 2: "serve rotation" plugin.
 	// startPlugin already prepends: serve --socket .. --p11-lib .. --p11-label .. --p11-pin .. --log-level debug
 	// We append: <newServeArgs> rotation <oldRotationArgs>
 	rotationExtraArgs := make([]string, 0, len(newServeArgs)+1+len(oldRotationArgs))
@@ -145,142 +153,108 @@ func runRotationTest(t *testing.T, oldServeArgs, newServeArgs, oldRotationArgs [
 	kmsRotationRoundtrip(t, sock, oldCiphertext, oldKeyId)
 }
 
+// ── Per-algorithm key generation and CLI arg helpers ─────────────────────────
+
+// generateKeyForAlgo generates the HSM key(s) required by algo, registers
+// t.Cleanup for deletion, and returns the KEK label and (for aes-cbc only)
+// the HMAC key label.  Any sub-test that calls this with AlgMLKEM is skipped
+// automatically when the token does not support CKM_ML_KEM_KEY_PAIR_GEN.
+func generateKeyForAlgo(t *testing.T, algo jose.Alg) (kekLabel, hmacLabel string) {
+	t.Helper()
+	kekLabel = newLabel(t)
+
+	switch algo {
+	case providers.AlgAESGCM:
+		key, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(kekLabel), 256, crypto11.CipherAES)
+		require.NoError(t, err, "generate AES-256-GCM key")
+		t.Cleanup(func() { _ = key.Delete() })
+
+	case providers.AlgAESCBC:
+		hmacLabel = newLabel(t)
+		kek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(kekLabel), 256, crypto11.CipherAES)
+		require.NoError(t, err, "generate AES-256-CBC KEK")
+		t.Cleanup(func() { _ = kek.Delete() })
+		// HMAC key: CKK_GENERIC_SECRET with CKA_SIGN=true so CKM_SHA256_HMAC is permitted.
+		hmacAttrs, err := crypto11.NewAttributeSetWithIDAndLabel(newKeyID(t), []byte(hmacLabel))
+		require.NoError(t, err)
+		require.NoError(t, hmacAttrs.Set(crypto11.CkaSign, true))
+		require.NoError(t, hmacAttrs.Set(crypto11.CkaVerify, true))
+		hmac, err := testCtx.GenerateSecretKeyWithAttributes(hmacAttrs, 256, crypto11.CipherGeneric)
+		require.NoError(t, err, "generate HMAC-SHA256 key")
+		t.Cleanup(func() { _ = hmac.Delete() })
+
+	case providers.AlgRSAOAEP:
+		kp, err := testCtx.GenerateRSAKeyPairWithLabel(newKeyID(t), []byte(kekLabel), 2048)
+		require.NoError(t, err, "generate RSA-2048-OAEP key pair")
+		t.Cleanup(func() { _ = kp.Delete() })
+
+	case providers.AlgMLKEM:
+		kp, err := testCtx.GenerateMLKEMKeyPairWithLabel(newKeyID(t), []byte(kekLabel), crypto11.MLKEM768)
+		if err != nil {
+			t.Skipf("ML-KEM key generation not supported by this token: %v"+
+				" — requires SoftHSMv3 from https://github.com/pqctoday-org/pqctoday-hsm", err)
+		}
+		t.Cleanup(func() { _ = kp.Delete() })
+
+	default:
+		t.Fatalf("generateKeyForAlgo: unsupported algorithm %q", algo)
+	}
+	return
+}
+
+// serveArgsForAlgo returns the --algorithm-family / --p11-key-label (and optionally
+// --p11-hmac-label for aes-cbc) serve flags for the given algorithm.
+func serveArgsForAlgo(algo jose.Alg, kekLabel, hmacLabel string) []string {
+	args := []string{"--algorithm-family", string(algo), "--p11-key-label", kekLabel}
+	if algo == providers.AlgAESCBC {
+		args = append(args, "--p11-hmac-label", hmacLabel)
+	}
+	return args
+}
+
+// oldRotationArgsForAlgo returns the --old-algorithm-family / --old-p11-key-label
+// (and optionally --old-p11-hmac-label for aes-cbc) rotation flags, prepended
+// with the common --old-p11-* token connection flags.
+func oldRotationArgsForAlgo(algo jose.Alg, kekLabel, hmacLabel string) []string {
+	args := append(oldTokenArgs(), "--old-algorithm-family", string(algo), "--old-p11-key-label", kekLabel)
+	if algo == providers.AlgAESCBC {
+		args = append(args, "--old-p11-hmac-label", hmacLabel)
+	}
+	return args
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-// TestRotation_FromAESGCM rotates from AES-256-GCM to a new AES-256-GCM key.
-// This exercises the AlgAESGCM branch of decryptWithContext on the rotation path.
-func TestRotation_FromAESGCM(t *testing.T) {
-	oldKekLabel := newLabel(t)
-	newKekLabel := newLabel(t)
-
-	oldKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(oldKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate old AES-256-GCM KEK")
-	t.Cleanup(func() { _ = oldKek.Delete() })
-
-	newKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(newKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate new AES-256-GCM KEK")
-	t.Cleanup(func() { _ = newKek.Delete() })
-
-	runRotationTest(t,
-		[]string{
-			"--algorithm-family", string(providers.AlgAESGCM),
-			"--p11-key-label", oldKekLabel,
-		},
-		[]string{
-			"--algorithm-family", string(providers.AlgAESGCM),
-			"--p11-key-label", newKekLabel,
-		},
-		append(oldTokenArgs(),
-			"--old-algorithm-family", string(providers.AlgAESGCM),
-			"--old-p11-key-label", oldKekLabel,
-		),
-	)
-}
-
-// TestRotation_FromAESCBC rotates from AES-256-CBC+HMAC-SHA256 to a new AES-256-GCM key.
-// This exercises the AlgAESCBC branch of decryptWithContext on the rotation path,
-// including HMAC key lookup via --old-p11-hmac-label.
-func TestRotation_FromAESCBC(t *testing.T) {
-	oldKekLabel  := newLabel(t)
-	oldHmacLabel := newLabel(t)
-	newKekLabel  := newLabel(t)
-
-	oldKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(oldKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate old AES-256-CBC KEK")
-	t.Cleanup(func() { _ = oldKek.Delete() })
-
-	// HMAC key: CKK_GENERIC_SECRET with CKA_SIGN=true so CKM_SHA256_HMAC is permitted.
-	hmacAttrs, err := crypto11.NewAttributeSetWithIDAndLabel(newKeyID(t), []byte(oldHmacLabel))
-	require.NoError(t, err)
-	require.NoError(t, hmacAttrs.Set(crypto11.CkaSign, true))
-	require.NoError(t, hmacAttrs.Set(crypto11.CkaVerify, true))
-	oldHmac, err := testCtx.GenerateSecretKeyWithAttributes(hmacAttrs, 256, crypto11.CipherGeneric)
-	require.NoError(t, err, "generate old HMAC-SHA256 key")
-	t.Cleanup(func() { _ = oldHmac.Delete() })
-
-	newKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(newKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate new AES-256-GCM KEK")
-	t.Cleanup(func() { _ = newKek.Delete() })
-
-	runRotationTest(t,
-		[]string{
-			"--algorithm-family", string(providers.AlgAESCBC),
-			"--p11-key-label",  oldKekLabel,
-			"--p11-hmac-label", oldHmacLabel,
-		},
-		[]string{
-			"--algorithm-family", string(providers.AlgAESGCM),
-			"--p11-key-label", newKekLabel,
-		},
-		append(oldTokenArgs(),
-			"--old-algorithm-family", string(providers.AlgAESCBC),
-			"--old-p11-key-label",  oldKekLabel,
-			"--old-p11-hmac-label", oldHmacLabel,
-		),
-	)
-}
-
-// TestRotation_FromRSAOAEP rotates from RSA-2048-OAEP to a new AES-256-GCM key.
-// This exercises the AlgRSAOAEP branch of decryptWithContext on the rotation path.
-func TestRotation_FromRSAOAEP(t *testing.T) {
-	oldKekLabel := newLabel(t)
-	newKekLabel := newLabel(t)
-
-	oldKP, err := testCtx.GenerateRSAKeyPairWithLabel(newKeyID(t), []byte(oldKekLabel), 2048)
-	require.NoError(t, err, "generate old RSA-2048-OAEP key pair")
-	t.Cleanup(func() { _ = oldKP.Delete() })
-
-	newKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(newKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate new AES-256-GCM KEK")
-	t.Cleanup(func() { _ = newKek.Delete() })
-
-	runRotationTest(t,
-		[]string{
-			"--algorithm-family", string(providers.AlgRSAOAEP),
-			"--p11-key-label", oldKekLabel,
-		},
-		[]string{
-			"--algorithm-family", string(providers.AlgAESGCM),
-			"--p11-key-label", newKekLabel,
-		},
-		append(oldTokenArgs(),
-			"--old-algorithm-family", string(providers.AlgRSAOAEP),
-			"--old-p11-key-label", oldKekLabel,
-		),
-	)
-}
-
-// TestRotation_FromMLKEM rotates from ML-KEM-768 to a new AES-256-GCM key.
-// This exercises decryptMLKEMWithContext on the rotation path.
-// Skipped automatically on tokens that do not support CKM_ML_KEM_KEY_PAIR_GEN
-// (SoftHSMv2 and earlier); requires SoftHSMv3.
-func TestRotation_FromMLKEM(t *testing.T) {
-	oldKekLabel := newLabel(t)
-	newKekLabel := newLabel(t)
-
-	oldKP, err := testCtx.GenerateMLKEMKeyPairWithLabel(newKeyID(t), []byte(oldKekLabel), crypto11.MLKEM768)
-	if err != nil {
-		t.Skipf("ML-KEM key generation not supported by this token: %v"+
-			" — requires SoftHSMv3 from https://github.com/pqctoday-org/pqctoday-hsm", err)
+// TestRotation covers all 16 combinations of old → new algorithm family (4 × 4).
+// Each combination is a sub-test named "From<old>_To<new>".
+// Sub-tests that involve ML-KEM are skipped automatically on tokens that do not
+// support CKM_ML_KEM_KEY_PAIR_GEN (SoftHSMv2 and earlier); requires SoftHSMv3.
+func TestRotation(t *testing.T) {
+	type algoEntry struct {
+		family jose.Alg
+		name   string
 	}
-	t.Cleanup(func() { _ = oldKP.Delete() })
+	algos := []algoEntry{
+		{providers.AlgAESGCM,  "AESGCM"},
+		{providers.AlgAESCBC,  "AESCBC"},
+		{providers.AlgRSAOAEP, "RSAOAEP"},
+		{providers.AlgMLKEM,   "MLKEM"},
+	}
 
-	newKek, err := testCtx.GenerateSecretKeyWithLabel(newKeyID(t), []byte(newKekLabel), 256, crypto11.CipherAES)
-	require.NoError(t, err, "generate new AES-256-GCM KEK")
-	t.Cleanup(func() { _ = newKek.Delete() })
+	for _, oldEntry := range algos {
+		for _, newEntry := range algos {
+			oldEntry, newEntry := oldEntry, newEntry // pin loop variables
+			t.Run(fmt.Sprintf("From%s_To%s", oldEntry.name, newEntry.name), func(t *testing.T) {
+				oldKekLabel, oldHmacLabel := generateKeyForAlgo(t, oldEntry.family)
+				newKekLabel, newHmacLabel := generateKeyForAlgo(t, newEntry.family)
 
-	runRotationTest(t,
-		[]string{
-			"--algorithm-family", string(providers.AlgMLKEM),
-			"--p11-key-label", oldKekLabel,
-		},
-		[]string{
-			"--algorithm-family", string(providers.AlgAESGCM),
-			"--p11-key-label", newKekLabel,
-		},
-		append(oldTokenArgs(),
-			"--old-algorithm-family", string(providers.AlgMLKEM),
-			"--old-p11-key-label", oldKekLabel,
-		),
-	)
+				runRotationTest(t,
+					serveArgsForAlgo(oldEntry.family, oldKekLabel, oldHmacLabel),
+					serveArgsForAlgo(newEntry.family, newKekLabel, newHmacLabel),
+					oldRotationArgsForAlgo(oldEntry.family, oldKekLabel, oldHmacLabel),
+				)
+			})
+		}
+	}
 }
+
