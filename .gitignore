@@ -11,6 +11,9 @@ deployed.json
 k8s-kms-plugin
 !k8s-kms-plugin/
 
+# vscode project files
+.vscode
+
 # dev
 pkg/crypto11
 pkg/gose
@@ -41,3 +44,13 @@ go.work
 
 # output for build
 dist/
+
+# Env vars
+.env
+
+# gRPC protobuf
+api.proto
+
+# Documents
+*.pdf
+*.PDF
