@@ -547,9 +547,10 @@ func (p *P11) Close() (err error) {
 	return
 }
 
-// makeAeadKey creates a new AES GCM key encryption key from the given HSM key
-// and random reader. It returns a gose.AeadEncryptionKey and an error.
-func (p *P11) makeAeadKey(ctx *crypto11.Context, rng io.Reader, kek *crypto11.SecretKey) (aek gose.AeadEncryptionKey, err error) {
+// makeAeadKey creates a new AES-GCM AeadEncryptionKey from the given HSM key.
+// kid is embedded in the JWE header and must match the label used at encrypt
+// time; callers must pass the correct label (active or old KEK) explicitly.
+func (p *P11) makeAeadKey(ctx *crypto11.Context, rng io.Reader, kek *crypto11.SecretKey, kid string) (aek gose.AeadEncryptionKey, err error) {
 	var aead cipher.AEAD
 	if aead, err = kek.NewGCM(); err != nil {
 		return nil, fmt.Errorf("error while creating new gcm cipher: %v", err)
@@ -558,7 +559,7 @@ func (p *P11) makeAeadKey(ctx *crypto11.Context, rng io.Reader, kek *crypto11.Se
 	if err != nil {
 		return nil, fmt.Errorf("error detecting AES-GCM key size: %v", err)
 	}
-	if aek, err = gose.NewAesGcmCryptor(aead, rng, p.kekCkaLabel, alg, kekKeyOps); err != nil {
+	if aek, err = gose.NewAesGcmCryptor(aead, rng, kid, alg, kekKeyOps); err != nil {
 		return nil, fmt.Errorf("error while creating aead key: %v", err)
 	}
 	return
@@ -678,6 +679,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 	var actualCtx *crypto11.Context
 	var actualDecryptors map[string]gose.JweDecryptor
 	var actualAlgo jose.Alg
+	var actualKekCkaLabel string
 	var actualHmacCkaId []byte
 	var actualHmacCkaLabel string
 
@@ -690,12 +692,14 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 		actualCtx = p.oldCtx
 		actualDecryptors = p.oldDecryptors
 		actualAlgo = p.oldAlgorithmFamily
+		actualKekCkaLabel = p.oldKekCkaLabel
 		actualHmacCkaId = p.oldHmacCkaId
 		actualHmacCkaLabel = p.oldHmacCkaLabel
 	} else {
 		actualCtx = p.ctx
 		actualDecryptors = p.decryptors
 		actualAlgo = p.algorithmFamily
+		actualKekCkaLabel = p.kekCkaLabel
 		actualHmacCkaId = p.hmacCkaId
 		actualHmacCkaLabel = p.hmacCkaLabel
 	}
@@ -734,7 +738,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 			}
 
 			var aek gose.AeadEncryptionKey
-			if aek, err = p.makeAeadKey(actualCtx, rng, kek); err != nil {
+			if aek, err = p.makeAeadKey(actualCtx, rng, kek, actualKekCkaLabel); err != nil {
 				logrus.WithError(err).Error("error while creating aead key")
 				return nil, err
 			}
@@ -882,8 +886,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 				return
 			}
 			var aek gose.AeadEncryptionKey
-			// TODO investigate why the aek result does not have a kid
-			if aek, err = p.makeAeadKey(p.ctx, rng, kek); err != nil {
+			if aek, err = p.makeAeadKey(p.ctx, rng, kek, p.kekCkaLabel); err != nil {
 				logrus.WithError(err).Errorf("Encrypt: cannot create an aead key")
 				return
 			}
