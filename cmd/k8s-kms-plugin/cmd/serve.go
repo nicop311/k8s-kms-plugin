@@ -13,7 +13,10 @@ package cmd
 //   - gose
 //   - crypto11
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -29,8 +32,8 @@ import (
 	version "github.com/ThalesGroup/k8s-kms-plugin/pkg/version"
 	k8skmsv2 "k8s.io/kms/apis/v2"
 
+	"github.com/ThalesGroup/k8s-kms-plugin/pkg/logging"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/providers"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
@@ -141,29 +144,28 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsServe); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		// Show the version of the k8s-kms-plugin and commit ID
-		version.LogrusOutputVersion()
+		version.LogVersion()
 
 		// Don't panic/exit if we have a PKCS#11 error.
 		// Sleep forever instead.
 		var p providers.Provider
 		p, err = initProvider()
 		if err != nil && providers.IsPKCS11AuthenticationError(err) {
-			logrus.WithField("cobra-cmd", cmd.Use).
-				WithError(err).
-				Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.")
-			logrus.WithField("cobra-cmd", cmd.Use).Warn("Process will now sleep indefinitely to prevent further damage...")
+			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra-cmd", cmd.Use, "error", err)
+			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra-cmd", cmd.Use)
 			time.Sleep(8760 * time.Hour)
 		}
 
 		if err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).Fatalf("failed to initialize provider: %v", err)
+			slog.Error(fmt.Sprintf("failed to initialize provider: %v", err), "cobra-cmd", cmd.Use)
+			os.Exit(1)
 		}
 
 		g := new(errgroup.Group)
@@ -194,7 +196,7 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 		}
 
 		if err = g.Wait(); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).Error(err)
+			slog.Error(err.Error(), "cobra-cmd", cmd.Use)
 		}
 
 		return
@@ -269,7 +271,7 @@ func initProvider() (p providers.Provider, err error) {
 	config := &crypto11.Config{}
 	switch vprFlgsServe.Provider {
 	case "p11", "softhsm":
-		logrus.Debug("initProvider: case p11 or softhsm")
+		slog.Debug("initProvider: case p11 or softhsm")
 		config = &crypto11.Config{
 			Path:            vprFlgsServe.P11Lib,
 			Pin:             vprFlgsServe.P11Pin,
@@ -277,7 +279,7 @@ func initProvider() (p providers.Provider, err error) {
 		}
 
 	case "luna", "dpod":
-		logrus.Debug("initProvider: case luna HSM or dpod")
+		slog.Debug("initProvider: case luna HSM or dpod")
 		config = &crypto11.Config{
 			Path:            vprFlgsServe.P11Lib,
 			Pin:             vprFlgsServe.P11Pin,
@@ -288,7 +290,7 @@ func initProvider() (p providers.Provider, err error) {
 			},
 		}
 	default:
-		logrus.WithField("provider", vprFlgsServe.Provider).Error("unknown provider")
+		slog.Error("unknown provider", "provider", vprFlgsServe.Provider)
 		err = errors.New("unknown provider")
 		return
 	}
@@ -322,7 +324,7 @@ func initProvider() (p providers.Provider, err error) {
 }
 
 func grpcServe(gl net.Listener, p providers.Provider) (err error) {
-	logrus.Trace("grpcServe")
+	slog.Log(context.Background(), logging.LevelTrace, "grpcServe")
 
 	// Create a gRPC server to host the services
 	serverOptions := []grpc.ServerOption{
@@ -335,12 +337,12 @@ func grpcServe(gl net.Listener, p providers.Provider) (err error) {
 	reflection.Register(gs)
 	istio.RegisterKeyManagementServiceServer(gs, p)
 
-	logrus.Infof("Serving on socket: %s", gl.Addr().String())
-	logrus.Debugf("grpcServe: value of grpcPort user input: %d", vprFlgsServe.Port)
+	slog.Info(fmt.Sprintf("Serving on socket: %s", gl.Addr().String()))
+	slog.Debug(fmt.Sprintf("grpcServe: value of grpcPort user input: %d", vprFlgsServe.Port))
 
 START:
 	if err = gs.Serve(gl); err != nil {
-		logrus.Error(err)
+		slog.Error(err.Error())
 		goto START
 	}
 	return
@@ -348,6 +350,6 @@ START:
 
 func unknownServiceHandler(srv interface{}, stream grpc.ServerStream) error {
 	typeOfSrv := reflect.TypeOf(srv)
-	logrus.Infof("unknownServiceHandler. Looking for: %v, %v", typeOfSrv, srv)
+	slog.Info(fmt.Sprintf("unknownServiceHandler. Looking for: %v, %v", typeOfSrv, srv))
 	return nil
 }

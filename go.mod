@@ -7,11 +7,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/grpc-gateway v1.16.0
 	github.com/infobloxopen/atlas-app-toolkit v1.4.1
-	github.com/keepeye/logrus-filename v0.0.0-20190711075016-ce01a4391dd1
 	github.com/miekg/pkcs11 v1.1.1
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/mitchellh/protoc-gen-go-json v1.1.0
-	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
@@ -46,12 +44,14 @@ require (
 	github.com/ThalesGroup/crypto11 v1.5.0
 	github.com/ThalesGroup/gose v0.11.0-rc
 	github.com/hashicorp/go-version v1.7.0
+	github.com/lmittmann/tint v1.1.3
 	k8s.io/kms v0.34.1
 )
 
 require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sirupsen/logrus v1.9.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )

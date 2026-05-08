@@ -10,16 +10,19 @@
 package cmd
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/ThalesGroup/crypto11"
+	"github.com/ThalesGroup/k8s-kms-plugin/pkg/logging"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/providers"
 	"github.com/ThalesGroup/k8s-kms-plugin/pkg/version"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
@@ -92,7 +95,7 @@ Using both CLI Flags, environment variables and configuration file and serving o
 	`,
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		// Manually call parent’s PersistentPreRunE
+		// Manually call parent's PersistentPreRunE
 		if cmd.Parent() != nil && cmd.Parent().PersistentPreRunE != nil {
 			if err := cmd.Parent().PersistentPreRunE(cmd.Parent(), args); err != nil {
 				return err
@@ -100,14 +103,14 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		}
 
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsRotation); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		// Show the version of the k8s-kms-plugin and commit ID
-		version.LogrusOutputVersion()
+		version.LogVersion()
 
 		// provider for the KEK that is being rotated, aka the old KEK
 		var p providers.Provider
@@ -116,19 +119,14 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		if err != nil && providers.IsPKCS11AuthenticationError(err) {
 			// Don't panic/exit if we have a PKCS#11 error.
 			// Sleep forever instead.
-			logrus.WithField("cobra-cmd", cmd.Use).
-				WithError(err).
-				Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.")
-			logrus.WithField("cobra-cmd", cmd.Use).Warn("Process will now sleep indefinitely to prevent further damage...")
+			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra-cmd", cmd.Use, "error", err)
+			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra-cmd", cmd.Use)
 			time.Sleep(8760 * time.Hour)
 		}
 
 		if err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Fatal("failed to initialize rotated provider for old KEK")
-		}
-
-		if err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Fatal("failed to initialize provider for new KEK")
+			slog.Error("failed to initialize rotated provider for old KEK", "cobra-cmd", cmd.Use, "error", err)
+			os.Exit(1)
 		}
 
 		// gRPC server
@@ -160,7 +158,7 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		}
 
 		if err = g.Wait(); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).Error(err)
+			slog.Error(err.Error(), "cobra-cmd", cmd.Use)
 		}
 
 		return nil
@@ -207,7 +205,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 	activeConfig := &crypto11.Config{}
 	switch vprFlgsServe.Provider {
 	case "p11", "softhsm":
-		logrus.Debug("initProvider: case p11 or softhsm")
+		slog.Debug("initProvider: case p11 or softhsm")
 		activeConfig = &crypto11.Config{
 			Path:            vprFlgsServe.P11Lib,
 			Pin:             vprFlgsServe.P11Pin,
@@ -215,7 +213,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 		}
 
 	case "luna", "dpod":
-		logrus.Debug("initProvider: case luna HSM or dpod")
+		slog.Debug("initProvider: case luna HSM or dpod")
 		activeConfig = &crypto11.Config{
 			Path:            vprFlgsServe.P11Lib,
 			Pin:             vprFlgsServe.P11Pin,
@@ -226,7 +224,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 			},
 		}
 	default:
-		logrus.WithField("provider", vprFlgsServe.Provider).Error("unknown provider")
+		slog.Error("unknown provider", "provider", vprFlgsServe.Provider)
 		err = errors.New("unknown provider")
 		return
 	}
@@ -248,7 +246,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 	oldConfig := &crypto11.Config{}
 	switch vprFlgsRotation.OldProvider {
 	case "p11", "softhsm":
-		logrus.Debug("initProvider: case p11 or softhsm")
+		slog.Debug("initProvider: case p11 or softhsm")
 		oldConfig = &crypto11.Config{
 			Path:            vprFlgsRotation.OldP11Lib,
 			Pin:             vprFlgsRotation.OldP11Pin,
@@ -256,7 +254,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 		}
 
 	case "luna", "dpod":
-		logrus.Debug("initProvider: case luna HSM or dpod")
+		slog.Debug("initProvider: case luna HSM or dpod")
 		oldConfig = &crypto11.Config{
 			Path:            vprFlgsRotation.OldP11Lib,
 			Pin:             vprFlgsRotation.OldP11Pin,
@@ -267,7 +265,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 			},
 		}
 	default:
-		logrus.WithField("provider", vprFlgsRotation.OldProvider).Error("unknown provider")
+		slog.Error("unknown provider", "provider", vprFlgsRotation.OldProvider)
 		err = errors.New("unknown provider")
 		return
 	}
@@ -301,7 +299,7 @@ func initRotatedProvider() (pRot providers.Provider, err error) {
 }
 
 func grpcRotation(gl net.Listener, p providers.Provider) (err error) {
-	logrus.Trace("grpcRotation")
+	slog.Log(context.Background(), logging.LevelTrace, "grpcRotation")
 
 	// Create a gRPC server to host the services
 	serverOptions := []grpc.ServerOption{
@@ -313,12 +311,12 @@ func grpcRotation(gl net.Listener, p providers.Provider) (err error) {
 	k8skmsv2.RegisterKeyManagementServiceServer(gs, p)
 	reflection.Register(gs)
 
-	logrus.Infof("Serving on socket: %s", gl.Addr().String())
-	logrus.Debugf("grpcRotation: value of grpcPort user input: %d", vprFlgsServe.Port)
+	slog.Info(fmt.Sprintf("Serving on socket: %s", gl.Addr().String()))
+	slog.Debug(fmt.Sprintf("grpcRotation: value of grpcPort user input: %d", vprFlgsServe.Port))
 
 START:
 	if err = gs.Serve(gl); err != nil {
-		logrus.Error(err)
+		slog.Error(err.Error())
 		goto START
 	}
 	return

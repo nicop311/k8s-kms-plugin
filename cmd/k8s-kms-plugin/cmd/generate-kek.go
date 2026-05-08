@@ -16,7 +16,8 @@ import (
 	"time"
 
 	istio "github.com/ThalesGroup/k8s-kms-plugin/apis/istio/v1"
-	"github.com/sirupsen/logrus"
+	"log/slog"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -39,7 +40,7 @@ var generateKEKCmd = &cobra.Command{
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsGenerateKEK); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil

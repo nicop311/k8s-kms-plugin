@@ -25,8 +25,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"context"
+	"log/slog"
+
 	"github.com/google/uuid"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
@@ -104,7 +106,7 @@ var testCmd = &cobra.Command{
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &viperFlagsTest); err != nil {
-			logrus.WithField("cobra-cmd", cmd.Use).WithError(err).Error("Error initializing Viper")
+			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
@@ -125,7 +127,7 @@ var testCmd = &cobra.Command{
 func loopTestRun() error {
 	count := 0
 	for {
-		logrus.Info("Running Tests")
+		slog.Info("Running Tests")
 		_ = runTest()
 		time.Sleep(10 * time.Second)
 		count++
@@ -142,7 +144,8 @@ func runTest() error {
 	ictx, icancel, ic, err := istio.GetClientSocket(viperFlagsTest.SocketPath, viperFlagsTest.Timeout)
 	defer icancel()
 	if err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
@@ -168,37 +171,37 @@ func runTest() error {
 	/*
 		GenerateDEK
 	*/
-	logrus.Info("Test 1 GenerateKEK 256 AES")
+	slog.Info("Test 1 GenerateKEK 256 AES")
 	var genKEKResp *istio.GenerateKEKResponse
 	genKEKResp, err = ic.GenerateKEK(ictx, &istio.GenerateKEKRequest{
 		KekKid: kekKid,
 	})
 	if err != nil {
-		logrus.Errorf("Test 1 Failed: %v", err)
+		slog.Error(fmt.Sprintf("Test 1 Failed: %v", err))
 		return err
 	}
-	logrus.Infof("Test 1 Returned KEK KID: %s", string(genKEKResp.KekKid))
+	slog.Info(fmt.Sprintf("Test 1 Returned KEK KID: %s", string(genKEKResp.KekKid)))
 	/*
 		GenerateDEK
 	*/
-	logrus.Info("Test 2 GenerateDEK 256 AES")
+	slog.Info("Test 2 GenerateDEK 256 AES")
 	var genDEKResp *istio.GenerateDEKResponse
 	if genDEKResp, err = ic.GenerateDEK(ictx, &istio.GenerateDEKRequest{
 
 		KekKid: genKEKResp.KekKid,
 	}); err != nil {
-		logrus.Fatal(err)
-
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
-	logrus.Infof("Test 2 Returned EncryptedDekBlob: %s", genDEKResp.EncryptedDekBlob)
+	slog.Info(fmt.Sprintf("Test 2 Returned EncryptedDekBlob: %s", genDEKResp.EncryptedDekBlob))
 
 	/*
 		GenerateSKey
 	*/
 
-	logrus.Info("Test 3 GenerateSKey 4096 RSA")
+	slog.Info("Test 3 GenerateSKey 4096 RSA")
 	var genSKeyResp *istio.GenerateSKeyResponse
 	if genSKeyResp, err = ic.GenerateSKey(ictx, &istio.GenerateSKeyRequest{
 		Size:             4096,
@@ -206,15 +209,16 @@ func runTest() error {
 		KekKid:           genKEKResp.KekKid,
 		EncryptedDekBlob: genDEKResp.EncryptedDekBlob,
 	}); err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
-	logrus.Infof("Test 3 Returned WrappedSKEY: %s", genSKeyResp.EncryptedSkeyBlob)
+	slog.Info(fmt.Sprintf("Test 3 Returned WrappedSKEY: %s", genSKeyResp.EncryptedSkeyBlob))
 
 	/*
 		LoadSKEY
 	*/
-	logrus.Info("Test 4 LoadSKEY 4096 RSA")
+	slog.Info("Test 4 LoadSKEY 4096 RSA")
 	var loadSKEYResp *istio.LoadSKeyResponse
 	if loadSKEYResp, err = ic.LoadSKey(ictx, &istio.LoadSKeyRequest{
 
@@ -222,11 +226,12 @@ func runTest() error {
 		EncryptedDekBlob:  genDEKResp.EncryptedDekBlob,
 		EncryptedSkeyBlob: genSKeyResp.EncryptedSkeyBlob,
 	}); err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 	var out string
-	if logrus.GetLevel() >= logrus.DebugLevel {
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		out = string(loadSKEYResp.PlaintextSkey)
 	} else {
 		out = "Success"
@@ -236,11 +241,11 @@ func runTest() error {
 	var b *pem.Block
 	b, _ = pem.Decode(loadSKEYResp.PlaintextSkey)
 	if skey, err = x509.ParsePKCS1PrivateKey(b.Bytes); err != nil {
-		logrus.Fatal(err)
-
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
-	logrus.Infof("Test 4 Returned LoadedSKey in PEM Format: %v", out)
+	slog.Info(fmt.Sprintf("Test 4 Returned LoadedSKey in PEM Format: %v", out))
 	skey.Public()
 
 	// Generate a dummy istiod intermediate CA CSR from this
@@ -258,7 +263,8 @@ func runTest() error {
 
 	var istioIntermediateCaCSR []byte
 	if istioIntermediateCaCSR, err = x509.CreateCertificateRequest(rand.Reader, csrTemplate, skey); nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
@@ -269,11 +275,12 @@ func runTest() error {
 	var aadHashOfSelectedCsrTemplateFields []byte
 	aadHashOfSelectedCsrTemplateFields, err = hashCsrTemplate(sha256.New(), csrTemplate)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
-	logrus.Info("Test 5 AuthenticatedEncrypt ")
+	slog.Info("Test 5 AuthenticatedEncrypt ")
 	var aeResp *istio.AuthenticatedEncryptResponse
 	if aeResp, err = ic.AuthenticatedEncrypt(ictx, &istio.AuthenticatedEncryptRequest{
 		KekKid:           genKEKResp.KekKid,
@@ -281,14 +288,15 @@ func runTest() error {
 		Plaintext:        istioIntermediateCaCSR,
 		Aad:              aadHashOfSelectedCsrTemplateFields,
 	}); err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
 	/*
 		AuthenticatedDecrypt
 	*/
-	logrus.Info("Test 6 AuthenticatedDecrypt ")
+	slog.Info("Test 6 AuthenticatedDecrypt ")
 	var adResp *istio.AuthenticatedDecryptResponse
 	if adResp, err = ic.AuthenticatedDecrypt(ictx, &istio.AuthenticatedDecryptRequest{
 		KekKid:           genKEKResp.KekKid,
@@ -296,33 +304,36 @@ func runTest() error {
 		Ciphertext:       aeResp.Ciphertext,
 		Aad:              aadHashOfSelectedCsrTemplateFields,
 	}); err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
-	logrus.Infof("Test 6 Returned AuthenticatedDecrypt (b64): %s", base64.URLEncoding.EncodeToString(adResp.Plaintext))
+	slog.Info(fmt.Sprintf("Test 6 Returned AuthenticatedDecrypt (b64): %s", base64.URLEncoding.EncodeToString(adResp.Plaintext)))
 
-	logrus.Info("Test 7 ImportCACert ")
+	slog.Info("Test 7 ImportCACert ")
 
 	var icResp *istio.ImportCACertResponse
 	if icResp, err = ic.ImportCACert(ictx, &istio.ImportCACertRequest{
 		CaId:       caKid,
 		CaCertBlob: []byte(dummyCaCert),
 	}); err != nil {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
-	logrus.Infof("Test 7 Returned ImportCACert: %v", icResp.Success)
+	slog.Info(fmt.Sprintf("Test 7 Returned ImportCACert: %v", icResp.Success))
 
 	/*
 	   VerifyCertChain - take the CA-signed cert and hand over to verify the chain (chain not provided - currently assumes there's no intermediate and we only need the CA cert in the HSM to verify)
 	*/
-	logrus.Info("Test 8 VerifyCertChain (only target cert)")
+	slog.Info("Test 8 VerifyCertChain (only target cert)")
 
 	var signedCert []byte
 	signedCert, err = dummyCaCertSigner(adResp.Plaintext, dummyCaCert, dummyCaPrivKey)
 	if nil != err {
-		logrus.Fatalf("error signing cert by dummy CA")
+		slog.Error("error signing cert by dummy CA")
+		os.Exit(1)
 		return err
 	}
 
@@ -334,12 +345,14 @@ func runTest() error {
 	}
 	var verifyCertChainResp = &istio.VerifyCertChainResponse{}
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		logrus.Fatal("VerifyCertChain returned false")
+		slog.Error("VerifyCertChain returned false")
+		os.Exit(1)
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -347,7 +360,7 @@ func runTest() error {
 	   VerifyCertChain - provides the target cert and the root cert (which matches one already in the HSM)
 	*/
 
-	logrus.Info("Test 9 VerifyCertChain (target cert and root cert - check that root cert matches one in the HSM)")
+	slog.Info("Test 9 VerifyCertChain (target cert and root cert - check that root cert matches one in the HSM)")
 	chain = nil
 	chain = make([][]byte, 0)
 	// Append the root cert first
@@ -358,12 +371,14 @@ func runTest() error {
 	verifyCertChainReq.Certificates = chain
 
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		logrus.Fatal("VerifyCertChain returned false")
+		slog.Error("VerifyCertChain returned false")
+		os.Exit(1)
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -371,7 +386,7 @@ func runTest() error {
 	   VerifyCertChain - provides the target cert and an intermediate cert (which verifies against one already in the HSM)
 	*/
 
-	logrus.Info("Test 10 VerifyCertChain (target cert and intermediate cert)")
+	slog.Info("Test 10 VerifyCertChain (target cert and intermediate cert)")
 
 	var intermediateForSigningPrivKey *rsa.PrivateKey
 	intermediateForSigningPrivKey, err = rsa.GenerateKey(rand.Reader, 4096)
@@ -390,7 +405,8 @@ func runTest() error {
 
 	var istioIntermediateCaCSRForEnd []byte
 	if istioIntermediateCaCSRForEnd, err = x509.CreateCertificateRequest(rand.Reader, csrIntermediateTemplateForSigning, intermediateForSigningPrivKey); nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
@@ -408,12 +424,14 @@ func runTest() error {
 	verifyCertChainReq.Certificates = chain
 
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		logrus.Fatal("VerifyCertChain returned false")
+		slog.Error("VerifyCertChain returned false")
+		os.Exit(1)
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -422,7 +440,7 @@ func runTest() error {
 	   We corrupt the signature
 	*/
 
-	logrus.Info("Test 11 VerifyCertChain (only target cert - negative)")
+	slog.Info("Test 11 VerifyCertChain (only target cert - negative)")
 
 	badCert, _ := x509.ParseCertificate(signedCert)
 	badCert.Signature[42] ^= badCert.Signature[42]
@@ -444,7 +462,7 @@ func runTest() error {
 	   but the provided chain verifies)
 	*/
 
-	logrus.Info("Test 12 VerifyCertChain (target cert and root cert - negative - root cert does not match loaded)")
+	slog.Info("Test 12 VerifyCertChain (target cert and root cert - negative - root cert does not match loaded)")
 
 	chain = nil
 	chain = make([][]byte, 0)
@@ -455,7 +473,8 @@ func runTest() error {
 	var signedCertByBadCa []byte
 	signedCertByBadCa, err = dummyCaCertSigner(adResp.Plaintext, dummyBadCaCert, dummyBadCaPrivKey)
 	if nil != err {
-		logrus.Fatalf("%v", err.Error())
+		slog.Error(err.Error())
+		os.Exit(1)
 		return err
 	}
 
@@ -491,7 +510,8 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var reloadedCsr *x509.CertificateRequest
 	reloadedCsr, err = x509.ParseCertificateRequest(p10Csr)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
@@ -500,7 +520,8 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var parsedRootCaCert *x509.Certificate
 	parsedRootCaCert, err = x509.ParseCertificate(pemCaCertBlock.Bytes)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
@@ -509,20 +530,23 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var parsedCaPrivKey *rsa.PrivateKey
 	parsedCaPrivKey, err = x509.ParsePKCS1PrivateKey(pemKeyBlock.Bytes)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
 	// Sanity check
 	if nil != reloadedCsr.CheckSignature() {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		logrus.Fatalf("Failed to generate serial number: %v", err)
+		slog.Error(fmt.Sprintf("Failed to generate serial number: %v", err))
+		os.Exit(1)
 	}
 
 	var childTemplate = &x509.Certificate{
@@ -552,14 +576,16 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 
 	signedCert, err = x509.CreateCertificate(rand.Reader, childTemplate, parsedRootCaCert, reloadedCsr.PublicKey, parsedCaPrivKey)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
 	var loadedSignedCert = &x509.Certificate{}
 	loadedSignedCert, err = x509.ParseCertificate(signedCert)
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
@@ -568,7 +594,8 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	certPool.AddCert(parsedRootCaCert)
 	_, err = loadedSignedCert.Verify(x509.VerifyOptions{Roots: certPool})
 	if nil != err {
-		logrus.Fatal(err)
+		slog.Error(err.Error())
+		os.Exit(1)
 		return
 	}
 
