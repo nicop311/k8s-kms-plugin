@@ -45,7 +45,7 @@ var docsCmd = &cobra.Command{
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsDocs); err != nil {
-			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
+			slog.Error("Error initializing Viper", "cobra_cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
@@ -53,7 +53,7 @@ var docsCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := generateCobraDocs(vprFlgsDocs.Format, vprFlgsDocs.OutputDir)
 		if err != nil {
-			slog.Error(fmt.Sprintf("Error generating docs in format %s at %s", vprFlgsDocs.Format, vprFlgsDocs.OutputDir), "error", err)
+			slog.Error("error generating docs", "format", vprFlgsDocs.Format, "output_dir", vprFlgsDocs.OutputDir, "error", err)
 		}
 		return err
 	},
@@ -264,7 +264,7 @@ func writeMarkdownReadme(dir string) error {
 func generateCobraDocs(format, out string) error {
 	// Create the output directory if it doesn't already exist
 	if _, err := os.Stat(out); os.IsNotExist(err) {
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Creating output directory %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "creating output directory", "path", out)
 		if err := os.MkdirAll(out, 0755); err != nil {
 			return fmt.Errorf("error creating output directory %s: %w", out, err)
 		}
@@ -281,7 +281,7 @@ func generateCobraDocs(format, out string) error {
 	// TODO: improve and clean this switch case
 	switch format {
 	case "markdown":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating markdown documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating markdown documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, format, filepath.Join(out, "cli-env-var-table.md")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
@@ -294,7 +294,7 @@ func generateCobraDocs(format, out string) error {
 		}
 		return nil
 	case "man":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating man documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating man documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "", filepath.Join(out, "cli-env-var-table.txt")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
@@ -304,7 +304,7 @@ func generateCobraDocs(format, out string) error {
 		}
 		return nil
 	case "rst":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating rst documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating rst documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "", filepath.Join(out, "cli-env-var-table.txt")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
@@ -313,7 +313,7 @@ func generateCobraDocs(format, out string) error {
 		}
 		return nil
 	case "yaml":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating yaml documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating yaml documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "", filepath.Join(out, "cli-env-var-table.txt")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
@@ -322,19 +322,19 @@ func generateCobraDocs(format, out string) error {
 		}
 		return nil
 	case "cli-table-csv":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating table documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating table documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "csv", filepath.Join(out, "cli-env-var-table.csv")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
 		return nil
 	case "cli-table-pretty":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating table documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating table documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "", filepath.Join(out, "cli-env-var-table.txt")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
 		return nil
 	case "cli-table-html":
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating table documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating table documentation", "path", out)
 		if err := writeFlagTableToFile(rootCmd, "html", filepath.Join(out, "cli-env-var-table.html")); err != nil {
 			return fmt.Errorf("error writing flag table to file: %w", err)
 		}
@@ -342,7 +342,7 @@ func generateCobraDocs(format, out string) error {
 	case "all":
 		for _, dir := range []string{"rst", "markdown", "man", "yaml", "csv", "html", "txt"} {
 			if _, err := os.Stat(filepath.Join(out, dir)); os.IsNotExist(err) {
-				slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Creating output directory %s", filepath.Join(out, dir)))
+				slog.Log(context.Background(), logging.LevelTrace, "creating output directory", "path", filepath.Join(out, dir))
 				if err := os.MkdirAll(filepath.Join(out, dir), 0755); err != nil {
 					return fmt.Errorf("error creating output directory %s: %w", filepath.Join(out, dir), err)
 				}
@@ -351,7 +351,7 @@ func generateCobraDocs(format, out string) error {
 			}
 		}
 
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("Generating all documentation at %s", out))
+		slog.Log(context.Background(), logging.LevelTrace, "generating all documentation", "path", out)
 		// markdown
 		if err := doc.GenMarkdownTree(rootCmd, filepath.Join(out, "markdown")); err != nil {
 			return fmt.Errorf("error generating markdown documentation: %w", err)

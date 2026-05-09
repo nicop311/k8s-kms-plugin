@@ -172,7 +172,6 @@ func generateSKey(ctx *crypto11.Context, request *istio.GenerateSKeyRequest, dek
 // GenerateDEK a 256 bit AES DEK Key , Wrapped via JWE with the PKCS11 base KEK
 func (p *P11) GenerateDEK(ctx context.Context, request *istio.GenerateDEKRequest) (resp *istio.GenerateDEKResponse, err error) {
 	if request == nil {
-		slog.Error(err.Error())
 		return nil, status.Error(codes.InvalidArgument, "no request sent")
 	}
 	var encryptor gose.JweEncryptor
@@ -185,7 +184,7 @@ func (p *P11) GenerateDEK(ctx context.Context, request *istio.GenerateDEKRequest
 
 	// GenerateDEK from p11.go
 	if dekBlob, err = GenerateDEK(p.ctx, encryptor); err != nil {
-		slog.Error(err.Error())
+		slog.Error("GenerateDEK failed", "error", err)
 		return
 	}
 	resp = &istio.GenerateDEKResponse{
@@ -199,7 +198,7 @@ func (p *P11) GenerateKEK(ctx context.Context, request *istio.GenerateKEKRequest
 	if request.KekKid == nil {
 		request.KekKid, err = p.genKekKid()
 		if err != nil {
-			slog.Error(err.Error())
+			slog.Error("genKekKid failed", "error", err)
 			return
 		}
 	}
@@ -207,7 +206,7 @@ func (p *P11) GenerateKEK(ctx context.Context, request *istio.GenerateKEKRequest
 	// GenerateKEK from p11.go
 	_, err = GenerateKEK(p.ctx, request.KekKid, []byte(defaultKEKlabel), jose.AlgA256GCM)
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("GenerateKEK failed", "error", err)
 		return
 	}
 	resp = &istio.GenerateKEKResponse{
@@ -327,7 +326,7 @@ func (p *P11) LoadSKey(ctx context.Context, request *istio.LoadSKeyRequest) (res
 func (p *P11) VerifyCertChain(ctx context.Context, request *istio.VerifyCertChainRequest) (resp *istio.VerifyCertChainResponse, err error) {
 	defer func() {
 		if err != nil {
-			slog.Error(fmt.Sprintf("Error in VerifyCertChain: %v", err))
+			slog.Error("VerifyCertChain error", "error", err)
 		}
 	}()
 	if nil == request {

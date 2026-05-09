@@ -21,7 +21,6 @@ import (
 	"hash"
 	"io"
 	"log/slog"
-	"os"
 
 	"github.com/ThalesGroup/crypto11"
 	"github.com/ThalesGroup/gose"
@@ -69,7 +68,7 @@ func GenerateDEK(ctx11 *crypto11.Context, encryptor gose.JweEncryptor) (encrypte
 
 	var rng io.Reader
 	if rng, err = ctx11.NewRandomReader(); err != nil {
-		slog.Error(err.Error())
+		slog.Error("NewRandomReader failed", "error", err)
 		return
 	}
 
@@ -89,7 +88,7 @@ func GenerateDEK(ctx11 *crypto11.Context, encryptor gose.JweEncryptor) (encrypte
 	// using the AES key as it's payload
 	var encryptedString string
 	if encryptedString, err = encryptor.Encrypt(dekStr, nil); err != nil {
-		slog.Error(err.Error())
+		slog.Error("encrypt DEK failed", "error", err)
 		return
 	}
 	encryptedKeyBlob = []byte(encryptedString)
@@ -308,7 +307,7 @@ func NewP11(
 
 		// find old KEK ID with LABEL
 		if oldKekkeyid == "" && oldKekCkaLabel != "" {
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("NewP11: kek key id (CKA_ID) is empty. Find CKA_ID by CKA_LABEL %s", k8sKekLabel))
+			slog.Log(context.Background(), logging.LevelTrace, "NewP11: finding CKA_ID by CKA_LABEL", "key_label", k8sKekLabel)
 			p.oldKekCkaLabel = oldKekCkaLabel
 
 			if p.oldKekCkaId, err = FindCkaAttrByIdOrLabel(p.oldCtx, p.oldAlgorithm, crypto11.CkaId, nil, []byte(p.oldKekCkaLabel)); err != nil {
@@ -319,7 +318,7 @@ func NewP11(
 
 		// find old KEK label with ID
 		if oldKekkeyid != "" && oldKekCkaLabel == "" {
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("NewP11: k8sKekLabel (CKA_LABEL) is empty but kekkeyid (CKA_ID) is not empty. Find CKA_LABEL by CKA_ID %s", oldKekkeyid))
+			slog.Log(context.Background(), logging.LevelTrace, "NewP11: finding CKA_LABEL by CKA_ID", "key_id", oldKekkeyid)
 			p.SetOldKekKeyIdString(oldKekkeyid)
 
 			var labelBuf []byte
@@ -576,7 +575,7 @@ func (p *P11) Decrypt(ctx context.Context, req *k8skmsv2.DecryptRequest) (resp *
 	case hex.EncodeToString(p.oldKekCkaId):
 		isRotation = true
 	default:
-		slog.Error("Decrypt: unknown key ID", "error", err, "key_id", req.GetKeyId())
+		slog.Error("Decrypt: unknown key ID", "key_id", req.GetKeyId())
 		return nil, fmt.Errorf("Decrypt: unknown key ID: %s", req.GetKeyId())
 	}
 
@@ -634,13 +633,13 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 		// convert the string DecryptRequest.KeyId containing a hex representation as string to hex []byte
 		var reqKekKeyIdByteA []byte
 		if reqKekKeyIdByteA, err = hex.DecodeString(req.GetKeyId()); err != nil {
-			slog.Error("error while decoding the key id", "error", err, "DecryptRequest.KeyId", req.GetKeyId())
+			slog.Error("error while decoding the key id", "error", err, "key_id", req.GetKeyId())
 			return nil, fmt.Errorf("error while decoding the key id: %v", err)
 		}
 
 		switch actualAlgo {
 		case jose.AlgA256GCM:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Decrypt case %s", jose.AlgA256GCM))
+			slog.Log(context.Background(), logging.LevelTrace, "p11 Decrypt case", "algorithm", string(jose.AlgA256GCM))
 
 			// get kek by CKA_ID
 			var kek *crypto11.SecretKey
@@ -669,7 +668,7 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 				return nil, err
 			}
 		case jose.AlgA256CBC:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Decrypt case %s", jose.AlgA256CBC))
+			slog.Log(context.Background(), logging.LevelTrace, "p11 Decrypt case", "algorithm", string(jose.AlgA256CBC))
 			// get kek by id
 			var kek *crypto11.SecretKey
 			if kek, err = actualCtx.FindKey(reqKekKeyIdByteA, nil); nil != err {
@@ -715,23 +714,23 @@ func (p *P11) decryptWithContext(req *k8skmsv2.DecryptRequest, isRotation bool) 
 				return nil, err
 			}
 		case jose.AlgRSAOAEP:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Decrypt case %s", jose.AlgRSAOAEP))
+			slog.Log(context.Background(), logging.LevelTrace, "p11 Decrypt case", "algorithm", string(jose.AlgRSAOAEP))
 			// load pkcs11 context
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = actualCtx.FindRSAKeyPair(reqKekKeyIdByteA, nil); err != nil {
-				slog.Error(fmt.Sprintf("error finding RSA key pair with id %X", reqKekKeyIdByteA), "error", err)
+				slog.Error("error finding RSA key pair", "key_id", hex.EncodeToString(reqKekKeyIdByteA), "error", err)
 				return nil, fmt.Errorf("error finding RSA key pair with id %X: %v", reqKekKeyIdByteA, err)
 			}
 
 			var privKey *hsm.AsymmetricDecryptionKey
 			if privKey, err = hsm.NewAsymmetricDecryptionKey(p.ctx, rsaKeyPair, reqKekKeyIdByteA, nil); err != nil {
-				slog.Error(fmt.Sprintf("error creating AsymmetricDecryptionKey with id %X", reqKekKeyIdByteA), "error", err)
+				slog.Error("error creating AsymmetricDecryptionKey", "key_id", hex.EncodeToString(reqKekKeyIdByteA), "error", err)
 				return nil, fmt.Errorf("error creating AsymmetricDecryptionKey with id %X: %v", reqKekKeyIdByteA, err)
 			}
 			// create key store from private key
 			var store gose.AsymmetricDecryptionKeyStore
 			if store, err = gose.NewAsymmetricDecryptionKeyStoreImpl(map[string]gose.AsymmetricDecryptionKey{req.GetKeyId(): privKey}); err != nil {
-				slog.Error(fmt.Sprintf("error creating AsymmetricDecryptionKeyStore with id %X", reqKekKeyIdByteA), "error", err)
+				slog.Error("error creating AsymmetricDecryptionKeyStore", "key_id", hex.EncodeToString(reqKekKeyIdByteA), "error", err)
 				return nil, fmt.Errorf("error creating AsymmetricDecryptionKeyStore with id %X: %v", reqKekKeyIdByteA, err)
 			}
 
@@ -776,11 +775,11 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 		// Select algorithm
 		switch p.algorithm {
 		case jose.AlgA256GCM:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Encrypt case %s", jose.AlgA256GCM))
+			slog.Log(ctx, logging.LevelTrace, "p11 Encrypt case", "algorithm", string(jose.AlgA256GCM))
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
-				slog.Error("Encrypt: cannot find a symmetric key", "error", err, "algorithm", jose.AlgA256GCM, "label", p.kekCkaLabel, "keyId", p.GetKekKeyIdString())
+				slog.Error("Encrypt: cannot find a symmetric key", "error", err, "algorithm", jose.AlgA256GCM, "label", p.kekCkaLabel, "key_id", p.GetKekKeyIdString())
 				return
 			}
 
@@ -805,11 +804,11 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			}
 
 		case jose.AlgA256CBC:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Encrypt case %s", jose.AlgA256CBC))
+			slog.Log(ctx, logging.LevelTrace, "p11 Encrypt case", "algorithm", string(jose.AlgA256CBC))
 			// Find the KEK in the KMS
 			var kek *crypto11.SecretKey
 			if kek, err = p.ctx.FindKey(p.kekCkaId, p.GetKekCkaLabelByteA()); nil != err {
-				slog.Error("Encrypt: cannot find a symmetric key", "error", err, "algorithm", p.algorithm, "label", p.kekCkaLabel, "keyId", p.GetKekKeyIdString())
+				slog.Error("Encrypt: cannot find a symmetric key", "error", err, "algorithm", p.algorithm, "label", p.kekCkaLabel, "key_id", p.GetKekKeyIdString())
 				return
 			}
 
@@ -852,7 +851,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			}
 
 		case jose.AlgRSAOAEP:
-			slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("p11:Encrypt case %s", jose.AlgRSAOAEP))
+			slog.Log(ctx, logging.LevelTrace, "p11 Encrypt case", "algorithm", string(jose.AlgRSAOAEP))
 			//TODO generate a jwk with the kid of the public key. Ex :
 			//      {"kty":"EC",
 			//         "crv":"P-256",
@@ -873,7 +872,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 			//    }
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = p.ctx.FindRSAKeyPair(p.kekCkaId, p.GetKekCkaLabelByteA()); err != nil {
-				slog.Error(fmt.Sprintf("Encrypt: cannot find an rsa key pair with label %s", p.kekCkaLabel), "error", err, "algorithm", p.algorithm, "label", p.kekCkaLabel, "keyId", p.GetKekKeyIdString())
+				slog.Error("Encrypt: cannot find an RSA key pair", "error", err, "algorithm", p.algorithm, "label", p.kekCkaLabel, "key_id", p.GetKekKeyIdString())
 				return nil, err
 			}
 
@@ -902,7 +901,7 @@ func (p *P11) Encrypt(ctx context.Context, req *k8skmsv2.EncryptRequest) (resp *
 				return
 			}
 		default:
-			slog.Info(fmt.Sprintf("Encrypt: not supported algorithm: %s", p.algorithm))
+			slog.Error("Encrypt: unsupported algorithm", "algorithm", p.algorithm)
 		}
 	}
 
@@ -940,7 +939,7 @@ func (s *P11) UnaryInterceptor(ctx context.Context, req interface{}, info *grpc.
 
 	resp, err = handler(ctx, req)
 	if err != nil {
-		slog.Error(err.Error())
+		slog.Error("handler error", "error", err)
 	}
 	return resp, err
 }
@@ -974,7 +973,7 @@ func (p *P11) Status(ctx context.Context, request *k8skmsv2.StatusRequest) (stat
 		KeyId:   p.GetKekKeyIdString(),
 	}
 
-	slog.Debug("StatusResponse", "Version", statusResponse.Version, "Healthz", statusResponse.Healthz, "KeyId", statusResponse.KeyId)
+	slog.Debug("status response", "version", statusResponse.Version, "healthz", statusResponse.Healthz, "key_id", statusResponse.KeyId)
 	return statusResponse, nil
 }
 
@@ -1016,14 +1015,14 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 			// Find the key in the KMS for AES symmetric algorithms
 			var symKey *crypto11.SecretKey
 			if symKey, err = ctx.FindKey(id, label); nil != err {
-				slog.Error(fmt.Sprintf("FindCkaAttrByIdOrLabel:cannot find a %s symmetric key with label %x or id %x", algorithm, label, id), "error", err)
+				slog.Error("FindCkaAttrByIdOrLabel: cannot find symmetric key", "algorithm", algorithm, "label", hex.EncodeToString(label), "key_id", hex.EncodeToString(id), "error", err)
 				return nil, err
 			}
 
 			// Get the CKA_ID to obtain the KEK key id
 			var attr *crypto11.Attribute
 			if attr, err = ctx.GetAttribute(symKey, ckaAttr); err != nil {
-				slog.Error(fmt.Sprintf("FindCkaAttrByIdOrLabel: cannot get the CKA_ attribute %v for algo %s and key with label %x or id %x", ckaAttr, algorithm, label, id), "error", err)
+				slog.Error("FindCkaAttrByIdOrLabel: cannot get attribute", "attr", ckaAttr, "algorithm", algorithm, "label", hex.EncodeToString(label), "key_id", hex.EncodeToString(id), "error", err)
 				return nil, err
 			} else {
 				outBuf = attr.Value
@@ -1032,21 +1031,21 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 			// Find the key in the KMS for RSA asymmetric algorithms
 			var rsaKeyPair crypto11.SignerDecrypter
 			if rsaKeyPair, err = ctx.FindRSAKeyPair(id, label); err != nil {
-				slog.Error(fmt.Sprintf("FindCkaAttrByIdOrLabel: cannot find an rsa key pair with label %x or id %x", label, id), "error", err)
+				slog.Error("FindCkaAttrByIdOrLabel: cannot find RSA key pair", "label", hex.EncodeToString(label), "key_id", hex.EncodeToString(id), "error", err)
 				return nil, err
 			}
 
 			// Get the key id by key label
 			var attr *crypto11.Attribute
 			if attr, err = ctx.GetAttribute(rsaKeyPair, ckaAttr); err != nil {
-				slog.Error(fmt.Sprintf("FindCkaAttrByIdOrLabel: cannot get the CKA_ attribute %v for algo %s and with label %x or id %x", ckaAttr, algorithm, label, id), "error", err)
+				slog.Error("FindCkaAttrByIdOrLabel: cannot get attribute", "attr", ckaAttr, "algorithm", algorithm, "label", hex.EncodeToString(label), "key_id", hex.EncodeToString(id), "error", err)
 				return nil, err
 			} else {
 				outBuf = attr.Value
 			}
 		}
 	} else {
-		slog.Error(fmt.Sprintf("FindCkaAttrByIdOrLabel: cannot find a key with parameters id%x and label%x", id, label))
+		slog.Error("FindCkaAttrByIdOrLabel: invalid parameters", "key_id", hex.EncodeToString(id), "label", hex.EncodeToString(label))
 		return nil, fmt.Errorf("FindCkaAttrByIdOrLabel: cannot find a key with parameters id%x and label%x", id, label)
 	}
 
@@ -1064,20 +1063,19 @@ func FindCkaAttrByIdOrLabel(ctx *crypto11.Context, algorithm jose.Alg, ckaAttr c
 func GetKeyIdAndLabel(p *P11, keyId string, keyLabel string) (resultKeyId []byte, resultKeyLabel string, err error) {
 	var resultKeyLabelBytes []byte
 	if keyId == "" && keyLabel != "" {
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("NewP11: key id (CKA_ID) is empty. Find CKA_ID by CKA_LABEL %s", keyLabel))
+		slog.Log(context.Background(), logging.LevelTrace, "NewP11: finding CKA_ID by CKA_LABEL", "key_label", keyLabel)
 		resultKeyLabel = keyLabel
 
 		keyLabelBytes := []byte(keyLabel)
 		resultKeyId, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithm, crypto11.CkaId, nil, keyLabelBytes)
 		if err != nil {
-			slog.Error(fmt.Sprintf("NewP11: failed to find key CKA_ID by CKA_LABEL '%s'", resultKeyLabel), "error", err)
+			slog.Error("NewP11: failed to find key CKA_ID by CKA_LABEL", "key_label", resultKeyLabel, "error", err)
 			return nil, "", err
 		}
 
 		// exit with fatal error if the CKA_ID of the key, found using its label, is empty.
 		if len(resultKeyId) == 0 {
-			slog.Error(fmt.Sprintf("NewP11: Fatal error : key ID (CKA_ID) empty for key label (CKA_LABEL) '%s'. k8s-kms-plugin only supports keys with a CKA_ID in HSM", keyLabel))
-			os.Exit(1)
+			logging.Fatal("NewP11: key CKA_ID is empty; only keys with a CKA_ID are supported", "key_label", keyLabel)
 		}
 	} else if keyId != "" && keyLabel == "" {
 		// Case: KEK ID already provided by user at startup with flag --p11-key-id
@@ -1086,24 +1084,24 @@ func GetKeyIdAndLabel(p *P11, keyId string, keyLabel string) (resultKeyId []byte
 		// API calls.
 		// But we could use EncryptResponse.Annotations and DecryptRequest.Annotations to store
 		// the value of the key label CKA_LABEL.
-		slog.Log(context.Background(), logging.LevelTrace, fmt.Sprintf("NewP11: key label (CKA_LABEL) is empty but key id (CKA_ID) is not empty. Find CKA_LABEL by CKA_ID %s", keyId))
+		slog.Log(context.Background(), logging.LevelTrace, "NewP11: finding CKA_LABEL by CKA_ID", "key_id", keyId)
 		resultKeyId, err = hex.DecodeString(keyId)
 		if err != nil {
 			return nil, "", fmt.Errorf("NewP11: cannot decode string CKA_ID into hex expected format '%s': %w", keyId, err)
 		}
 
 		if resultKeyLabelBytes, err = FindCkaAttrByIdOrLabel(p.ctx, p.algorithm, crypto11.CkaLabel, resultKeyId, nil); err != nil {
-			slog.Error("NewP11: failed to find key CKA_LABEL by CKA_ID", "error", err, "keyId", fmt.Sprintf("%s", resultKeyId))
+			slog.Error("NewP11: failed to find key CKA_LABEL by CKA_ID", "key_id", hex.EncodeToString(resultKeyId), "error", err)
 			return nil, "", err
 		}
 		resultKeyLabel = string(resultKeyLabelBytes)
 	} else if keyId == "" && keyLabel == "" {
 		err = errors.New("NewP11: key ID (CKA_ID) and key label (CKA_LABEL) are both empty, please provide one of them")
-		slog.Error(err.Error())
+		slog.Error("NewP11: missing key identifier", "error", err)
 		return nil, "", err
 	} else {
 		err = errors.New("NewP11: both key ID (CKA_ID) and key label (CKA_LABEL) are provided, please provide only one")
-		slog.Error(err.Error())
+		slog.Error("NewP11: conflicting key identifiers", "error", err)
 		return nil, "", err
 	}
 

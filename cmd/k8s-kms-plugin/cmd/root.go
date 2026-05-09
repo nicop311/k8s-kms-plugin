@@ -42,6 +42,9 @@ type ViperFlagsRoot struct {
 // Declare the viper CLI flag values buffer
 var vprFlgsRoot ViperFlagsRoot
 
+// activeLogLevel is the runtime-adjustable log level shared by all slog handlers.
+var activeLogLevel = new(slog.LevelVar)
+
 // cobra root CLI flags default value
 const (
 	defaultKekId = "a37807cd-6d1a-4d75-813a-e120f30176f7" // TODO: with KMS v2, consider not using this hardcoded value
@@ -124,20 +127,19 @@ func initConfig() {
 	InitViperSubCmdE(viper.GetViper(), rootCmd, &vprFlgsRoot)
 
 	// Determine log level
-	var level slog.Level
 	if rootCmd.Flags().Lookup("debug").Changed {
-		level = slog.LevelDebug
+		activeLogLevel.Set(slog.LevelDebug)
 	} else {
-		var err error
-		level, err = logging.ParseLevel(vprFlgsRoot.LogLevel)
+		level, err := logging.ParseLevel(vprFlgsRoot.LogLevel)
 		if err != nil {
 			slog.Error("unknown log level", "error", err)
 		}
+		activeLogLevel.Set(level)
 	}
 
 	// Build slog handler based on requested format
 	opts := &tint.Options{
-		Level:      level,
+		Level:      activeLogLevel,
 		TimeFormat: time.DateTime,
 		AddSource:  true,
 	}
@@ -145,18 +147,17 @@ func initConfig() {
 	switch vprFlgsRoot.LogFormat {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-			Level:     level,
+			Level:     activeLogLevel,
 			AddSource: true,
 		})
 	case "text":
 		handler = tint.NewHandler(os.Stderr, opts)
 	default:
 		handler = tint.NewHandler(os.Stderr, opts)
-		slog.SetDefault(slog.New(handler))
 		slog.Error("unknown log format", "format", vprFlgsRoot.LogFormat)
 	}
 	slog.SetDefault(slog.New(handler))
 
-	slog.Debug(fmt.Sprintf("log format is set to: %s", vprFlgsRoot.LogFormat))
-	slog.Debug(fmt.Sprintf("log level is set to: %s", level))
+	slog.Debug("log format configured", "log_format", vprFlgsRoot.LogFormat)
+	slog.Debug("log level configured", "log_level", activeLogLevel.Level())
 }

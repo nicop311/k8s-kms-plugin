@@ -12,7 +12,6 @@ package cmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -103,7 +102,7 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		}
 
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsRotation); err != nil {
-			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
+			slog.Error("Error initializing Viper", "cobra_cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
@@ -119,14 +118,13 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		if err != nil && providers.IsPKCS11AuthenticationError(err) {
 			// Don't panic/exit if we have a PKCS#11 error.
 			// Sleep forever instead.
-			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra-cmd", cmd.Use, "error", err)
-			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra-cmd", cmd.Use)
+			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra_cmd", cmd.Use, "error", err)
+			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra_cmd", cmd.Use)
 			time.Sleep(8760 * time.Hour)
 		}
 
 		if err != nil {
-			slog.Error("failed to initialize rotated provider for old KEK", "cobra-cmd", cmd.Use, "error", err)
-			os.Exit(1)
+			logging.Fatal("failed to initialize rotated provider for old KEK", "cobra_cmd", cmd.Use, "error", err)
 		}
 
 		// gRPC server
@@ -158,7 +156,7 @@ Using both CLI Flags, environment variables and configuration file and serving o
 		}
 
 		if err = g.Wait(); err != nil {
-			slog.Error(err.Error(), "cobra-cmd", cmd.Use)
+			slog.Error("gRPC server error", "cobra_cmd", cmd.Use, "error", err)
 		}
 
 		return nil
@@ -311,12 +309,12 @@ func grpcRotation(gl net.Listener, p providers.Provider) (err error) {
 	k8skmsv2.RegisterKeyManagementServiceServer(gs, p)
 	reflection.Register(gs)
 
-	slog.Info(fmt.Sprintf("Serving on socket: %s", gl.Addr().String()))
-	slog.Debug(fmt.Sprintf("grpcRotation: value of grpcPort user input: %d", vprFlgsServe.Port))
+	slog.Info("serving on socket", "address", gl.Addr().String())
+	slog.Debug("grpc port", "port", vprFlgsServe.Port)
 
 START:
 	if err = gs.Serve(gl); err != nil {
-		slog.Error(err.Error())
+		slog.Error("gRPC serve error", "error", err)
 		goto START
 	}
 	return

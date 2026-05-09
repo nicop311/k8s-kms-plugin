@@ -15,7 +15,6 @@ package cmd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -144,7 +143,7 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsServe); err != nil {
-			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
+			slog.Error("Error initializing Viper", "cobra_cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
@@ -158,14 +157,13 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 		var p providers.Provider
 		p, err = initProvider()
 		if err != nil && providers.IsPKCS11AuthenticationError(err) {
-			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra-cmd", cmd.Use, "error", err)
-			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra-cmd", cmd.Use)
+			slog.Error("PKCS11 authentication error detected. Further retries may cause the token to be erased.", "cobra_cmd", cmd.Use, "error", err)
+			slog.Warn("Process will now sleep indefinitely to prevent further damage...", "cobra_cmd", cmd.Use)
 			time.Sleep(8760 * time.Hour)
 		}
 
 		if err != nil {
-			slog.Error(fmt.Sprintf("failed to initialize provider: %v", err), "cobra-cmd", cmd.Use)
-			os.Exit(1)
+			logging.Fatal("failed to initialize provider", "cobra_cmd", cmd.Use, "error", err)
 		}
 
 		g := new(errgroup.Group)
@@ -196,7 +194,7 @@ Using AES-CBC with HMAC authentication, using CKA_ID, using CLI flags and servin
 		}
 
 		if err = g.Wait(); err != nil {
-			slog.Error(err.Error(), "cobra-cmd", cmd.Use)
+			slog.Error("gRPC server error", "cobra_cmd", cmd.Use, "error", err)
 		}
 
 		return
@@ -337,12 +335,12 @@ func grpcServe(gl net.Listener, p providers.Provider) (err error) {
 	reflection.Register(gs)
 	istio.RegisterKeyManagementServiceServer(gs, p)
 
-	slog.Info(fmt.Sprintf("Serving on socket: %s", gl.Addr().String()))
-	slog.Debug(fmt.Sprintf("grpcServe: value of grpcPort user input: %d", vprFlgsServe.Port))
+	slog.Info("serving on socket", "address", gl.Addr().String())
+	slog.Debug("grpc port", "port", vprFlgsServe.Port)
 
 START:
 	if err = gs.Serve(gl); err != nil {
-		slog.Error(err.Error())
+		slog.Error("gRPC serve error", "error", err)
 		goto START
 	}
 	return
@@ -350,6 +348,6 @@ START:
 
 func unknownServiceHandler(srv interface{}, stream grpc.ServerStream) error {
 	typeOfSrv := reflect.TypeOf(srv)
-	slog.Info(fmt.Sprintf("unknownServiceHandler. Looking for: %v, %v", typeOfSrv, srv))
+	slog.Info("unknown service handler", "type", typeOfSrv, "service", srv)
 	return nil
 }

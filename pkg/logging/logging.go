@@ -12,6 +12,7 @@ package logging
 import (
 	"fmt"
 	"log/slog"
+	"os"
 )
 
 // LevelTrace is a custom slog level below Debug, following the convention of slog.Level(-8).
@@ -34,4 +35,10 @@ func ParseLevel(s string) (slog.Level, error) {
 	default:
 		return slog.LevelInfo, fmt.Errorf("unknown log level %q, accepted: trace, debug, info, warn, error", s)
 	}
+}
+
+// Fatal logs an error message with optional key-value pairs and exits with status 1.
+func Fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
 }

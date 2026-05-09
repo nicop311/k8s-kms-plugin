@@ -28,6 +28,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/ThalesGroup/k8s-kms-plugin/pkg/logging"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -106,7 +107,7 @@ var testCmd = &cobra.Command{
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &viperFlagsTest); err != nil {
-			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
+			slog.Error("Error initializing Viper", "cobra_cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
@@ -144,8 +145,7 @@ func runTest() error {
 	ictx, icancel, ic, err := istio.GetClientSocket(viperFlagsTest.SocketPath, viperFlagsTest.Timeout)
 	defer icancel()
 	if err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("socket connection error", "error", err)
 		return err
 	}
 
@@ -177,10 +177,10 @@ func runTest() error {
 		KekKid: kekKid,
 	})
 	if err != nil {
-		slog.Error(fmt.Sprintf("Test 1 Failed: %v", err))
+		slog.Error("Test 1 failed", "error", err)
 		return err
 	}
-	slog.Info(fmt.Sprintf("Test 1 Returned KEK KID: %s", string(genKEKResp.KekKid)))
+	slog.Info("Test 1 result", "kek_kid", string(genKEKResp.KekKid))
 	/*
 		GenerateDEK
 	*/
@@ -190,12 +190,11 @@ func runTest() error {
 
 		KekKid: genKEKResp.KekKid,
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 2 failed", "error", err)
 		return err
 	}
 
-	slog.Info(fmt.Sprintf("Test 2 Returned EncryptedDekBlob: %s", genDEKResp.EncryptedDekBlob))
+	slog.Info("Test 2 result", "encrypted_dek_blob", genDEKResp.EncryptedDekBlob)
 
 	/*
 		GenerateSKey
@@ -209,11 +208,10 @@ func runTest() error {
 		KekKid:           genKEKResp.KekKid,
 		EncryptedDekBlob: genDEKResp.EncryptedDekBlob,
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 3 failed", "error", err)
 		return err
 	}
-	slog.Info(fmt.Sprintf("Test 3 Returned WrappedSKEY: %s", genSKeyResp.EncryptedSkeyBlob))
+	slog.Info("Test 3 result", "encrypted_skey_blob", genSKeyResp.EncryptedSkeyBlob)
 
 	/*
 		LoadSKEY
@@ -226,8 +224,7 @@ func runTest() error {
 		EncryptedDekBlob:  genDEKResp.EncryptedDekBlob,
 		EncryptedSkeyBlob: genSKeyResp.EncryptedSkeyBlob,
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 4 failed", "error", err)
 		return err
 	}
 	var out string
@@ -241,11 +238,10 @@ func runTest() error {
 	var b *pem.Block
 	b, _ = pem.Decode(loadSKEYResp.PlaintextSkey)
 	if skey, err = x509.ParsePKCS1PrivateKey(b.Bytes); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to parse PKCS1 private key", "error", err)
 		return err
 	}
-	slog.Info(fmt.Sprintf("Test 4 Returned LoadedSKey in PEM Format: %v", out))
+	slog.Info("Test 4 result", "skey", out)
 	skey.Public()
 
 	// Generate a dummy istiod intermediate CA CSR from this
@@ -263,8 +259,7 @@ func runTest() error {
 
 	var istioIntermediateCaCSR []byte
 	if istioIntermediateCaCSR, err = x509.CreateCertificateRequest(rand.Reader, csrTemplate, skey); nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to create certificate request", "error", err)
 		return err
 	}
 
@@ -275,8 +270,7 @@ func runTest() error {
 	var aadHashOfSelectedCsrTemplateFields []byte
 	aadHashOfSelectedCsrTemplateFields, err = hashCsrTemplate(sha256.New(), csrTemplate)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to hash CSR template", "error", err)
 		return err
 	}
 
@@ -288,8 +282,7 @@ func runTest() error {
 		Plaintext:        istioIntermediateCaCSR,
 		Aad:              aadHashOfSelectedCsrTemplateFields,
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 5 failed", "error", err)
 		return err
 	}
 
@@ -304,11 +297,10 @@ func runTest() error {
 		Ciphertext:       aeResp.Ciphertext,
 		Aad:              aadHashOfSelectedCsrTemplateFields,
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 6 failed", "error", err)
 		return err
 	}
-	slog.Info(fmt.Sprintf("Test 6 Returned AuthenticatedDecrypt (b64): %s", base64.URLEncoding.EncodeToString(adResp.Plaintext)))
+	slog.Info("Test 6 result", "authenticated_decrypt_b64", base64.URLEncoding.EncodeToString(adResp.Plaintext))
 
 	slog.Info("Test 7 ImportCACert ")
 
@@ -317,12 +309,11 @@ func runTest() error {
 		CaId:       caKid,
 		CaCertBlob: []byte(dummyCaCert),
 	}); err != nil {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 7 failed", "error", err)
 		return err
 	}
 
-	slog.Info(fmt.Sprintf("Test 7 Returned ImportCACert: %v", icResp.Success))
+	slog.Info("Test 7 result", "success", icResp.Success)
 
 	/*
 	   VerifyCertChain - take the CA-signed cert and hand over to verify the chain (chain not provided - currently assumes there's no intermediate and we only need the CA cert in the HSM to verify)
@@ -332,8 +323,7 @@ func runTest() error {
 	var signedCert []byte
 	signedCert, err = dummyCaCertSigner(adResp.Plaintext, dummyCaCert, dummyCaPrivKey)
 	if nil != err {
-		slog.Error("error signing cert by dummy CA")
-		os.Exit(1)
+		logging.Fatal("error signing cert by dummy CA", "error", err)
 		return err
 	}
 
@@ -345,14 +335,12 @@ func runTest() error {
 	}
 	var verifyCertChainResp = &istio.VerifyCertChainResponse{}
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 8 failed", "error", err)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		slog.Error("VerifyCertChain returned false")
-		os.Exit(1)
+		logging.Fatal("VerifyCertChain returned false")
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -371,14 +359,12 @@ func runTest() error {
 	verifyCertChainReq.Certificates = chain
 
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 9 failed", "error", err)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		slog.Error("VerifyCertChain returned false")
-		os.Exit(1)
+		logging.Fatal("VerifyCertChain returned false")
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -405,8 +391,7 @@ func runTest() error {
 
 	var istioIntermediateCaCSRForEnd []byte
 	if istioIntermediateCaCSRForEnd, err = x509.CreateCertificateRequest(rand.Reader, csrIntermediateTemplateForSigning, intermediateForSigningPrivKey); nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to create intermediate certificate request", "error", err)
 		return err
 	}
 
@@ -424,14 +409,12 @@ func runTest() error {
 	verifyCertChainReq.Certificates = chain
 
 	if verifyCertChainResp, err = ic.VerifyCertChain(ictx, verifyCertChainReq); nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("Test 10 failed", "error", err)
 		return err
 	}
 
 	if !verifyCertChainResp.SuccessfulVerification {
-		slog.Error("VerifyCertChain returned false")
-		os.Exit(1)
+		logging.Fatal("VerifyCertChain returned false")
 		return fmt.Errorf("VerifyCertChain returned false")
 	}
 
@@ -473,8 +456,7 @@ func runTest() error {
 	var signedCertByBadCa []byte
 	signedCertByBadCa, err = dummyCaCertSigner(adResp.Plaintext, dummyBadCaCert, dummyBadCaPrivKey)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to sign cert by bad CA", "error", err)
 		return err
 	}
 
@@ -510,8 +492,7 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var reloadedCsr *x509.CertificateRequest
 	reloadedCsr, err = x509.ParseCertificateRequest(p10Csr)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to parse certificate request", "error", err)
 		return
 	}
 
@@ -520,8 +501,7 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var parsedRootCaCert *x509.Certificate
 	parsedRootCaCert, err = x509.ParseCertificate(pemCaCertBlock.Bytes)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to parse CA certificate", "error", err)
 		return
 	}
 
@@ -530,23 +510,20 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	var parsedCaPrivKey *rsa.PrivateKey
 	parsedCaPrivKey, err = x509.ParsePKCS1PrivateKey(pemKeyBlock.Bytes)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to parse CA private key", "error", err)
 		return
 	}
 
 	// Sanity check
-	if nil != reloadedCsr.CheckSignature() {
-		slog.Error(err.Error())
-		os.Exit(1)
+	if sigErr := reloadedCsr.CheckSignature(); sigErr != nil {
+		logging.Fatal("CSR signature check failed", "error", sigErr)
 		return
 	}
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		slog.Error(fmt.Sprintf("Failed to generate serial number: %v", err))
-		os.Exit(1)
+		logging.Fatal("failed to generate serial number", "error", err)
 	}
 
 	var childTemplate = &x509.Certificate{
@@ -576,16 +553,14 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 
 	signedCert, err = x509.CreateCertificate(rand.Reader, childTemplate, parsedRootCaCert, reloadedCsr.PublicKey, parsedCaPrivKey)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to create certificate", "error", err)
 		return
 	}
 
 	var loadedSignedCert = &x509.Certificate{}
 	loadedSignedCert, err = x509.ParseCertificate(signedCert)
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("failed to parse signed certificate", "error", err)
 		return
 	}
 
@@ -594,8 +569,7 @@ func dummyCaCertSigner(p10Csr []byte, pemCaCert, pemCaPrivKey string) (signedCer
 	certPool.AddCert(parsedRootCaCert)
 	_, err = loadedSignedCert.Verify(x509.VerifyOptions{Roots: certPool})
 	if nil != err {
-		slog.Error(err.Error())
-		os.Exit(1)
+		logging.Fatal("certificate verification failed", "error", err)
 		return
 	}
 

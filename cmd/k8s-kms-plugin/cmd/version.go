@@ -48,7 +48,7 @@ Examples:
 	// Initialize and populate cobra CLI flags values with viper during the Persistent pre-run
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := InitViperSubCmdE(viper.GetViper(), cmd, &vprFlgsVersion); err != nil {
-			slog.Error("Error initializing Viper", "cobra-cmd", cmd.Use, "error", err)
+			slog.Error("Error initializing Viper", "cobra_cmd", cmd.Use, "error", err)
 			return err
 		}
 		return nil
