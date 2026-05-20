@@ -107,9 +107,9 @@ func init() {
 
 	// logging level
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Set log level to \"debug\". This is equivalent to using --log-level=debug. Flags --log-level and --debug flag are mutually exclusive. Env var: K8S_KMS_PLUGIN_DEBUG.")
-	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Set log level. Possible values: trace, debug, info, warn, error. Flags --log-level and --debug flag are mutually exclusive. Env var: K8S_KMS_PLUGIN_LOG_LEVEL.")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Set log level. Possible values: trace, debug, info, warn, error, quiet. Flags --log-level and --debug flag are mutually exclusive. Env var: K8S_KMS_PLUGIN_LOG_LEVEL.")
 	rootCmd.RegisterFlagCompletionFunc("log-level", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"trace", "debug", "info", "warn", "error"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"trace", "debug", "info", "warn", "error", "quiet"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "text", "Log output format. Possible values: text, json. Env var: K8S_KMS_PLUGIN_LOG_FORMAT")
 	rootCmd.RegisterFlagCompletionFunc("log-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -135,6 +135,10 @@ func initConfig() {
 			slog.Error("unknown log level", "error", err)
 		}
 		activeLogLevel.Set(level)
+		if level == logging.LevelQuiet {
+			slog.SetDefault(slog.New(slog.DiscardHandler))
+			return
+		}
 	}
 
 	// Build slog handler based on requested format

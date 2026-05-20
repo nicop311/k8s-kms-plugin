@@ -12,14 +12,20 @@ package logging
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 )
 
 // LevelTrace is a custom slog level below Debug, following the convention of slog.Level(-8).
 const LevelTrace = slog.Level(-8)
 
+// LevelQuiet suppresses all log output when used with a DiscardHandler.
+// It is not passed to a handler's minimum level; instead root.go detects it
+// and installs slog.DiscardHandler directly.
+const LevelQuiet = slog.Level(math.MaxInt)
+
 // ParseLevel converts a level name string to a slog.Level.
-// Accepted values: trace, debug, info, warn, error.
+// Accepted values: trace, debug, info, warn, error, quiet.
 func ParseLevel(s string) (slog.Level, error) {
 	switch s {
 	case "trace":
@@ -32,8 +38,10 @@ func ParseLevel(s string) (slog.Level, error) {
 		return slog.LevelWarn, nil
 	case "error":
 		return slog.LevelError, nil
+	case "quiet":
+		return LevelQuiet, nil
 	default:
-		return slog.LevelInfo, fmt.Errorf("unknown log level %q, accepted: trace, debug, info, warn, error", s)
+		return slog.LevelInfo, fmt.Errorf("unknown log level %q, accepted: trace, debug, info, warn, error, quiet", s)
 	}
 }
 
